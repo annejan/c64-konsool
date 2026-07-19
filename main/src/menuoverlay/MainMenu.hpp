@@ -2,18 +2,19 @@
 
 #include "C64Emu.hpp"
 #include "MenuBaseClass.hpp"
-#include "menuoverlay/MenuTypes.hpp"
 #include "MenuDataStore.hpp"
+#include "menuoverlay/MenuTypes.hpp"
 
 class LoadMenu;
 class UsbLoadMenu;
 
 class MainMenu : public MenuBaseClass {
    private:
-    C64Emu*      c64emu = nullptr;
-    LoadMenu*    loadMenu;
-    UsbLoadMenu* usbLoadMenu;
-    void      resetC64(MenuItem* item);
+    C64Emu*        c64emu = nullptr;
+    LoadMenu*      loadMenu;
+    UsbLoadMenu*   usbLoadMenu;
+    void           resetC64(MenuItem* item);
+    void           exitToLauncher(MenuItem* item);
     MenuDataStore* menuDataStore = MenuDataStore::getInstance();
 
    public:

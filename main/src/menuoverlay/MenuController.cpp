@@ -6,6 +6,7 @@
 #include "MainMenu.hpp"
 // #include "esp_log.h"
 #include "esp_lcd_panel_ops.h"
+#include "icons.h"
 #include "menuoverlay/MenuDataStore.hpp"
 #include "menuoverlay/MenuTypes.hpp"
 #include "pax_fonts.h"
@@ -26,6 +27,7 @@ MenuController::MenuController()
 
 void MenuController::init(C64Emu* c64emu)
 {
+    load_icons();
     MenuController::c64emu = c64emu;
     // Setup the main menu
     rootMenu               = new MainMenu("Main Menu", nullptr, this);
@@ -104,20 +106,35 @@ void MenuController::render()
         pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + i * 20, 800, 480 - 60 - i * 20);
         pax_draw_line(fb, 0xFFFF0000, 0, 60 + i * 20, 800, 60 + i * 20);
         i += 1;
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      "To switch between the menu and the Commodore 64 press the purple diamond button\n"
-                      "To switch between joystick port 1 and 2 press the blue rounded triangle button\n"
-                      "To enable joystick emulation set 'Joystick emulation' to 'On' in this menu."
-                      "\n"
-                      "You can change the volume of the speaker and headphone output using the volume up\n"
-                      "and down keys on the right side of the device.\n");
-        i += 6;
+        pax_draw_image(fb, get_icon(ICON_F5), 10, 60 + i * 20);
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
+                      "Switch between this menu and the Commodore 64");
+        i += 1;
+        pax_draw_image(fb, get_icon(ICON_F6), 10, 60 + i * 20);
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
+                      ("Switch joystick emulation between joystick port 1 and 2, current port: " +
+                       std::to_string(currentJoystick))
+                          .c_str());
 
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      ("Current emulated joystick port: " + std::to_string(currentJoystick)).c_str());
         i += 2;
         pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      "Note: loading D64 images is not supported, you can only load PRG images.");
+                      "To enable joystick emulation set 'Joystick emulation' to 'On' in this menu.\n"
+                      "You can change the volume of the speaker and headphone output using the volume up\n"
+                      "and down keys on the right side of the device.\n");
+        i += 4;
+
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - Loading D64 images is not supported, you can only load PRG images.");
+
+        i += 1;
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - Connecting an USB keyboard to the USB-A port is also supported");
+        i += 1;
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - Joystick emulation uses left shift for fire, arrow keys");
+        i += 1;
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - ('/' and right shift input left + up and right + up respectively)");
 
         prevJoystick = currentJoystick;
     }

@@ -136,7 +136,7 @@ void KonsoolKB::handleKeyPress()
                     if (keys_pressed[BSP_INPUT_SCANCODE_KP6]) {  // RIGHT key code
                         virtjoystickvalue &= ~(1 << Joystick::C64JOYRIGHT);
                     }
-                    if (keys_pressed[BSP_INPUT_SCANCODE_LEFTSHIFT] || keys_pressed[BSP_INPUT_SCANCODE_RIGHTSHIFT]) {
+                    if (keys_pressed[BSP_INPUT_SCANCODE_LEFTSHIFT]) {
                         virtjoystickvalue &= ~(1 << Joystick::C64JOYFIRE);
                     }
                     // extra keys to make playing platform games easier

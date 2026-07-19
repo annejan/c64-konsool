@@ -56,6 +56,7 @@ extern "C" {
 // #include "src/konsoolled.hpp"
 // #include "src/Config.hpp"
 
+#include "esp_vfs_fat.h"
 #include "global_event_handler.h"
 #include "hid_keyboard.h"
 
@@ -66,6 +67,8 @@ uint8_t* fb_memory;
 
 // Constants
 static char const* TAG = "app_main";
+
+static wl_handle_t wl_handle = WL_INVALID_HANDLE;
 
 C64Emu c64Emu;
 
@@ -106,6 +109,19 @@ extern "C" void app_main(void)
         res = nvs_flash_init();
     }
     ESP_ERROR_CHECK(res);
+
+    esp_vfs_fat_mount_config_t fat_mount_config = {
+        .format_if_mount_failed   = false,
+        .max_files                = 10,
+        .allocation_unit_size     = CONFIG_WL_SECTOR_SIZE,
+        .disk_status_check_enable = false,
+        .use_one_fat              = false,
+    };
+
+    res = esp_vfs_fat_spiflash_mount_rw_wl("/int", "locfd", &fat_mount_config, &wl_handle);
+    if (res != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount FAT filesystem: %s", esp_err_to_name(res));
+    }
 
     // Initialize the Board Support Package
     const bsp_configuration_t bsp_configuration = {

@@ -10,6 +10,7 @@
 
 extern "C" {
 #include "bsp/audio.h"
+#include "bsp/device.h"
 }
 
 MainMenu::MainMenu(std::string title, MenuBaseClass* previousMenu, MenuController* menuController)
@@ -26,6 +27,11 @@ void MainMenu::resetC64(MenuItem* item)
     ExternalCmds* ext = &c64emu->externalCmds;
 
     ext->reset();
+}
+
+void MainMenu::exitToLauncher(MenuItem* item)
+{
+    bsp_device_restart_to_launcher();
 }
 
 bool MainMenu::init()
@@ -84,6 +90,13 @@ bool MainMenu::init()
     reset_item->type     = MenuItemType::ACTION;
     reset_item->action   = [this](MenuItem* item) { this->resetC64(item); };
     items.push_back(*reset_item);
+
+    MenuItem* launcher_item = new MenuItem();
+    launcher_item->id       = id_count++;
+    launcher_item->title    = "Exit and return to launcher";
+    launcher_item->type     = MenuItemType::ACTION;
+    launcher_item->action   = [this](MenuItem* item) { this->exitToLauncher(item); };
+    items.push_back(*launcher_item);
 
     /*MenuItem* perf_mon   = new MenuItem();
     perf_mon->id         = id_count++;

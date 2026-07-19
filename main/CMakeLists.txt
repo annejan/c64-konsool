@@ -21,6 +21,7 @@ idf_component_register(
 		"src/sid/i2s.cpp"
 		"sdcard.c"
 		"global_event_handler.c"
+		"icons.c"
 	PRIV_REQUIRES
 		esp_lcd
 		esp_adc
