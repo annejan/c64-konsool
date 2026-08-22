@@ -57,7 +57,36 @@ typedef struct {
     hid_gamepad_field_t hat;
     hid_gamepad_field_t buttons;  // bit_size is one, the count is in button_count
     uint16_t            button_count;
+    bool                dpad_is_buttons;  // Four of the buttons are a d-pad rather than fire buttons
+    uint16_t            dpad_first;       // Index of the first of those, they run up, right, down, left
 } hid_gamepad_layout_t;
+
+// A DualShock 3 enumerates and hands out its report descriptor, but stays silent until
+// the host asks it to start reporting. It has no hat switch either, its d-pad sits in
+// buttons five through eight.
+static const uint8_t dualshock3_enable_reporting[] = {0x42, 0x0c, 0x00, 0x00};
+
+static const hid_gamepad_quirk_t hid_gamepad_quirks[] = {
+    {
+        .vid                  = 0x054c,
+        .pid                  = 0x0268,
+        .name                 = "DualShock 3",
+        .enable_report_id     = 0xf4,
+        .enable_report        = dualshock3_enable_reporting,
+        .enable_report_length = sizeof(dualshock3_enable_reporting),
+        .dpad_first_button    = 4,
+    },
+};
+
+const hid_gamepad_quirk_t *hid_gamepad_find_quirk(uint16_t vid, uint16_t pid)
+{
+    for (size_t i = 0; i < sizeof(hid_gamepad_quirks) / sizeof(hid_gamepad_quirks[0]); i++) {
+        if (hid_gamepad_quirks[i].vid == vid && hid_gamepad_quirks[i].pid == pid) {
+            return &hid_gamepad_quirks[i];
+        }
+    }
+    return NULL;
+}
 
 // Written by the HID host task, read by the emulator task
 static volatile uint8_t     joy_value = HID_GAMEPAD_C64_IDLE;
@@ -124,7 +153,7 @@ static int32_t extract_field(const uint8_t *data, int length, const hid_gamepad_
     return (int32_t)value;
 }
 
-bool hid_gamepad_connect(const uint8_t *report_descriptor, size_t length)
+bool hid_gamepad_connect(const uint8_t *report_descriptor, size_t length, uint16_t vid, uint16_t pid)
 {
     hid_gamepad_disconnect();
 
@@ -273,6 +302,15 @@ bool hid_gamepad_connect(const uint8_t *report_descriptor, size_t length)
     layout.report_id = report_id;
     layout.valid     = true;
 
+    const hid_gamepad_quirk_t *quirk = hid_gamepad_find_quirk(vid, pid);
+    if (quirk != NULL && quirk->dpad_first_button != HID_GAMEPAD_NO_DPAD_BUTTONS && layout.buttons.present &&
+        layout.button_count > quirk->dpad_first_button + 3) {
+        layout.dpad_is_buttons = true;
+        layout.dpad_first      = (uint16_t)quirk->dpad_first_button;
+        ESP_LOGI(TAG, "%s: buttons %d to %d are a d-pad", quirk->name, quirk->dpad_first_button + 1,
+                 quirk->dpad_first_button + 4);
+    }
+
     ESP_LOGI(TAG, "Gamepad layout: report id %d, x %d, y %d, hat %d, %d buttons at %d", layout.report_id,
              layout.x.present ? layout.x.bit_offset : -1, layout.y.present ? layout.y.bit_offset : -1,
              layout.hat.present ? layout.hat.bit_offset : -1, layout.button_count,
@@ -333,10 +371,27 @@ void hid_gamepad_handle_report(const uint8_t *data, int length)
     for (uint16_t b = 0; b < layout.button_count; b++) {
         hid_gamepad_field_t button = layout.buttons;
         button.bit_offset += b;
-        if (extract_field(data, length, &button)) {
-            fire = true;
-            break;
+        if (!extract_field(data, length, &button)) {
+            continue;
         }
+        if (layout.dpad_is_buttons && b >= layout.dpad_first && b < layout.dpad_first + 4) {
+            switch (b - layout.dpad_first) {
+                case 0:
+                    up = true;
+                    break;
+                case 1:
+                    right = true;
+                    break;
+                case 2:
+                    down = true;
+                    break;
+                default:
+                    left = true;
+                    break;
+            }
+            continue;
+        }
+        fire = true;
     }
 
     uint8_t value = HID_GAMEPAD_C64_IDLE;

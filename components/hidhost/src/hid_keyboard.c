@@ -15,6 +15,37 @@
 
 static const char *TAG = "hid_kbd";
 
+// Largest enable report any of the gamepad quirks sends
+#define MAX_ENABLE_REPORT_LENGTH 8
+
+/**
+ * @brief Nudge a gamepad that has to be told to start sending input reports
+ *
+ * @param[in] hid_device_handle  HID Device handle
+ * @param[in] quirk              Quirks of this gamepad, may be NULL
+ */
+static void hid_host_gamepad_start_reporting(hid_host_device_handle_t hid_device_handle,
+                                             const hid_gamepad_quirk_t *quirk)
+{
+    uint8_t report[MAX_ENABLE_REPORT_LENGTH];
+
+    if (quirk == NULL || quirk->enable_report == NULL) {
+        return;
+    }
+
+    if (quirk->enable_report_length > sizeof(report)) {
+        ESP_LOGE(TAG, "Enable report of the %s does not fit", quirk->name);
+        return;
+    }
+
+    // The request takes a writable buffer
+    memcpy(report, quirk->enable_report, quirk->enable_report_length);
+
+    esp_err_t err = hid_class_request_set_report(hid_device_handle, HID_REPORT_TYPE_FEATURE, quirk->enable_report_id,
+                                                 report, quirk->enable_report_length);
+    ESP_LOGI(TAG, "Asked the %s to start reporting: %s", quirk->name, esp_err_to_name(err));
+}
+
 
 /* --- HID → BSP scancode mapping --- */
 
@@ -394,9 +425,14 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
         }
         if (HID_PROTOCOL_NONE == dev_params.proto) {
             // The report layout differs per gamepad, so learn it from the report descriptor
-            size_t   report_desc_len = 0;
-            uint8_t *report_desc     = hid_host_get_report_descriptor(hid_device_handle, &report_desc_len);
-            hid_gamepad_connect(report_desc, report_desc_len);
+            size_t              report_desc_len = 0;
+            uint8_t            *report_desc = hid_host_get_report_descriptor(hid_device_handle, &report_desc_len);
+            hid_host_dev_info_t info;
+            memset(&info, 0, sizeof(info));
+            hid_host_get_device_info(hid_device_handle, &info);
+            ESP_LOGI(TAG, "Gamepad %04X:%04X", info.VID, info.PID);
+            hid_gamepad_connect(report_desc, report_desc_len, info.VID, info.PID);
+            hid_host_gamepad_start_reporting(hid_device_handle, hid_gamepad_find_quirk(info.VID, info.PID));
         }
         ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
         break;
