@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -17,14 +18,19 @@ extern "C" {
 // Idle value of the C64 joystick byte
 #define HID_GAMEPAD_C64_IDLE 0xff
 
-/// @brief Whether at least one USB gamepad is connected
+/// @brief Whether a usable USB gamepad is connected
 bool hid_gamepad_connected(void);
 
 /// @brief Latest gamepad state as a C64 joystick byte, active low
 uint8_t hid_gamepad_get_c64_joy(void);
 
-/// @brief Track gamepad connects and disconnects, called by the HID host
-void hid_gamepad_set_connected(bool connected);
+/// @brief Learn the report layout of a connected gamepad from its report descriptor
+///
+/// @return true when the descriptor describes something usable as a joystick
+bool hid_gamepad_connect(const uint8_t *report_descriptor, size_t length);
+
+/// @brief Forget the connected gamepad and release the joystick
+void hid_gamepad_disconnect(void);
 
 /// @brief Feed a raw HID input report from a gamepad, called by the HID host
 void hid_gamepad_handle_report(const uint8_t *data, int length);

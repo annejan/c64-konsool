@@ -345,7 +345,7 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
         ESP_LOGI(TAG, "HID Device, protocol '%s' DISCONNECTED",
                  hid_proto_name_str[dev_params.proto]);
         if (HID_PROTOCOL_NONE == dev_params.proto) {
-            hid_gamepad_set_connected(false);
+            hid_gamepad_disconnect();
         }
         ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
         break;
@@ -393,7 +393,10 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
             }
         }
         if (HID_PROTOCOL_NONE == dev_params.proto) {
-            hid_gamepad_set_connected(true);
+            // The report layout differs per gamepad, so learn it from the report descriptor
+            size_t   report_desc_len = 0;
+            uint8_t *report_desc     = hid_host_get_report_descriptor(hid_device_handle, &report_desc_len);
+            hid_gamepad_connect(report_desc, report_desc_len);
         }
         ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
         break;
