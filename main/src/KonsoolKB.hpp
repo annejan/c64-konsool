@@ -57,6 +57,7 @@ class KonsoolKB {
     KonsoolKB();
     void    init(C64Emu* c64emu);
     void    handleKeyPress();
+    void    handleGamepadMenuInput();
     uint8_t getdc01(uint8_t dc00, bool xchgports);
     uint8_t getKBJoyValue(bool port2);
     void    setKbcodes(uint8_t colmask, uint8_t rowmask);

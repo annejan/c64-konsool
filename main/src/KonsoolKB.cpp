@@ -222,6 +222,34 @@ void KonsoolKB::handleKeyPress()
                 break;
         }
     }
+
+    handleGamepadMenuInput();
+}
+
+void KonsoolKB::handleGamepadMenuInput()
+{
+    // Gamepads report their state continuously, so only newly pressed directions count
+    static uint8_t prev_joy = HID_GAMEPAD_C64_IDLE;
+
+    uint8_t joy     = hid_gamepad_get_c64_joy();
+    uint8_t pressed = (uint8_t)(prev_joy & ~joy);
+    prev_joy        = joy;
+
+    if (!menuController->getVisible()) {
+        return;
+    }
+
+    if (pressed & HID_GAMEPAD_C64_UP) {
+        menuController->handleInput(MENU_OVERLAY_INPUT_TYPE_UP);
+    } else if (pressed & HID_GAMEPAD_C64_DOWN) {
+        menuController->handleInput(MENU_OVERLAY_INPUT_TYPE_DOWN);
+    } else if (pressed & HID_GAMEPAD_C64_LEFT) {
+        menuController->handleInput(MENU_OVERLAY_INPUT_TYPE_LEFT);
+    } else if (pressed & HID_GAMEPAD_C64_RIGHT) {
+        menuController->handleInput(MENU_OVERLAY_INPUT_TYPE_RIGHT);
+    } else if (pressed & HID_GAMEPAD_C64_FIRE) {
+        menuController->handleInput(MENU_OVERLAY_INPUT_TYPE_SELECT);
+    }
 }
 
 uint8_t KonsoolKB::getdc01(uint8_t querydc00, bool xchgports)
