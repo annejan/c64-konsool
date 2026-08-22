@@ -28,10 +28,9 @@ extern "C" {
 #include "KonsoolKB.hpp"
 #include "kbmatrix.hpp"
 
-#define BSP_INPUT_SCANCODE_RIGHTCTRL 0x1d
-#define BSP_INPUT_SCANCODE_MENU      0x5d
-
 static const char* TAG = "KonsoolKB";
+
+static bool fn_pressed = false;
 
 KonsoolKB::KonsoolKB()
 {
@@ -53,9 +52,11 @@ void KonsoolKB::init(C64Emu* c64emu)
     ESP_ERROR_CHECK(bsp_input_get_queue(&input_event_queue));
 
     // init buffer
-    buffer   = new uint8_t[256];
-    sentdc01 = 0xff;
-    sentdc00 = 0xff;
+    buffer = new uint8_t[256];
+    for (int i = 0; i < 8; i++) {
+        keyarr[i]     = 0xff;
+        rev_keyarr[i] = 0xff;
+    }
 
     // init div
     virtjoystickvalue = 0xff;
@@ -69,8 +70,10 @@ void KonsoolKB::handleKeyPress()
     static bool       keys_pressed[128];
 
     // Reset C64 key matrix
-    sentdc00 = 0xff;
-    sentdc01 = 0xff;
+    for (int i = 0; i < 8; i++) {
+        keyarr[i]     = 0xff;
+        rev_keyarr[i] = 0xff;
+    }
 
     if (this->display == nullptr) {
         this->display = c64emu->cpu.vic->getDriver();
@@ -91,13 +94,26 @@ void KonsoolKB::handleKeyPress()
                 if (key_code == BSP_INPUT_SCANCODE_F6) {
                     menuController->toggle();
                 }
+                if ((key_code & 0x7f) == BSP_INPUT_SCANCODE_FN) {
+                    fn_pressed = (key_code & 0x80) ? false : true;
+                    printf("FN changed: %u\r\n", fn_pressed);
+                }
                 if (key_code == BSP_INPUT_SCANCODE_F5) {  // Switch between joystick port 1 & 2
-                    int cur_port = menuDataStore->getInt("kb_joystick_port", 1);
-                    menuDataStore->set("kb_joystick_port", cur_port == 1 ? 2 : 1);
-                    // TODO: Remove me later
-                    cur_port = menuDataStore->getInt("kb_joystick_port", 1);
-                    ESP_LOGI(TAG, "Switched to joystick port %d", cur_port);
-                    menuController->handleInput(MENU_OVERLAY_INPUT_TYPE_NONE);
+                    if (fn_pressed) {
+                        uint8_t brightness = 0;
+                        bsp_input_get_backlight_brightness(&brightness);
+                        bsp_input_set_backlight_brightness(brightness > 0 ? 0 : 100);
+                    } else {
+                        int cur_port = menuDataStore->getInt("kb_joystick_port", 1);
+                        menuDataStore->set("kb_joystick_port", cur_port == 1 ? 2 : 1);
+                        // TODO: Remove me later
+                        cur_port = menuDataStore->getInt("kb_joystick_port", 1);
+                        ESP_LOGI(TAG, "Switched to joystick port %d", cur_port);
+                        menuController->handleInput(MENU_OVERLAY_INPUT_TYPE_NONE);
+                    }
+                }
+                if (key_code == BSP_INPUT_SCANCODE_TAB) {
+                    c64emu->cpu.restorenmi = true;
                 }
                 // Handle C64 keyboard matrix based on pressed keys
                 if (menuController->getVisible()) {
@@ -153,31 +169,47 @@ void KonsoolKB::handleKeyPress()
                 }
 
                 if (!menuController->getVisible() && virtjoystickvalue == 0xff) {
-                    shiftctrlcode = 0;
-                    bool shift_pressed =
-                        keys_pressed[BSP_INPUT_SCANCODE_LEFTSHIFT] || keys_pressed[BSP_INPUT_SCANCODE_RIGHTSHIFT];
+                    bool physical_left  = keys_pressed[BSP_INPUT_SCANCODE_LEFTSHIFT];
+                    bool physical_right = keys_pressed[BSP_INPUT_SCANCODE_RIGHTSHIFT];
+                    bool shift_pressed  = physical_left || physical_right;
+
+                    bool virtual_shift   = false;
+                    bool virtual_deshift = false;
 
                     for (int i = 0; i < 128; i++) {
-                        // shiftctrlcode = second byte bit 0 -> left shift, bit 1 -> ctrl, bit 2 -> commodore, bit 7 ->
-                        // external command
-                        if (i == BSP_INPUT_SCANCODE_F8 || i == BSP_INPUT_SCANCODE_LEFTSHIFT ||
-                            i == BSP_INPUT_SCANCODE_LEFTCTRL || i == BSP_INPUT_SCANCODE_MENU) {
+                        if (!keys_pressed[i]) {
                             continue;
                         }
-                        if (keys_pressed[i]) {
-                            // Translate C64 keyboard matrix to KonsoleLED layout
-                            // or it with the previous values
-                            KbMatrixEntry ent = shift_pressed ? kb_matrix_shift[i] : kb_matrix[i];
-                            sentdc00          = sentdc00 & ent.sentdc00;
-                            sentdc01          = sentdc01 & ent.sentdc01;
-                            if (ent.implicit_shift) shiftctrlcode |= 1;
+                        KbMatrixEntry ent = shift_pressed ? kb_matrix_shift[i] : kb_matrix[i];
+                        if (ent.row < 0) {
+                            continue;  // scancode has no C64 matrix mapping
                         }
+                        keyarr[ent.row]     &= ~(1 << ent.col);
+                        rev_keyarr[ent.col] &= ~(1 << ent.row);
+                        if (ent.shift & 0x01) virtual_shift = true;    // VIRTUAL_SHIFT
+                        if (ent.shift & 0x10) virtual_deshift = true;  // DESHIFT_SHIFT
                     }
-                    if (keys_pressed[BSP_INPUT_SCANCODE_LEFTCTRL] || keys_pressed[BSP_INPUT_SCANCODE_RIGHTCTRL]) {
-                        shiftctrlcode |= 2;
+                    if (virtual_deshift) {
+                        virtual_shift = false;
                     }
-                    if (keys_pressed[BSP_INPUT_SCANCODE_MENU]) {
-                        shiftctrlcode |= 4;
+
+                    bool lshift_bit =
+                        (physical_left && !virtual_deshift) || (virtual_shift && !VSHIFT_IS_RSHIFT && !physical_right);
+                    bool rshift_bit =
+                        (physical_right && !virtual_deshift) || (virtual_shift && VSHIFT_IS_RSHIFT && !physical_left);
+                    if (lshift_bit) {
+                        keyarr[LSHIFT_ROW]     &= ~(1 << LSHIFT_COL);
+                        rev_keyarr[LSHIFT_COL] &= ~(1 << LSHIFT_ROW);
+                    } else {
+                        keyarr[LSHIFT_ROW]     |= (1 << LSHIFT_COL);
+                        rev_keyarr[LSHIFT_COL] |= (1 << LSHIFT_ROW);
+                    }
+                    if (rshift_bit) {
+                        keyarr[RSHIFT_ROW]     &= ~(1 << RSHIFT_COL);
+                        rev_keyarr[RSHIFT_COL] &= ~(1 << RSHIFT_ROW);
+                    } else {
+                        keyarr[RSHIFT_ROW]     |= (1 << RSHIFT_COL);
+                        rev_keyarr[RSHIFT_COL] |= (1 << RSHIFT_ROW);
                     }
                 }
                 break;
@@ -193,63 +225,14 @@ void KonsoolKB::handleKeyPress()
 
 uint8_t KonsoolKB::getdc01(uint8_t querydc00, bool xchgports)
 {
-    uint8_t kbcode1;
-    uint8_t kbcode2;
-    if (xchgports) {
-        kbcode1 = sentdc01;
-        kbcode2 = sentdc00;
-    } else {
-        kbcode1 = sentdc00;
-        kbcode2 = sentdc01;
-    }
-    if (querydc00 == 0) {
-        return kbcode2;
-    }
-
-    // special case "shift" + "commodore"
-    if ((shiftctrlcode & 5) == 5) {
-        if (querydc00 == kbcode1) {
-            return kbcode2;
-        } else {
-            return 0xff;
+    const uint8_t* arr    = xchgports ? rev_keyarr : keyarr;
+    uint8_t        result = 0xff;
+    for (int row = 0; row < 8; row++) {
+        if (!(querydc00 & (1 << row))) {
+            result &= arr[row];
         }
     }
-    // key combined with a "special key" (shift, ctrl, commodore)?
-    if ((~querydc00 & 2) && (shiftctrlcode & 1)) {  // *query* left shift key?
-        if (kbcode1 == 0xfd) {
-            // handle scan of key codes in the same "row"
-            return kbcode2 & 0x7f;
-        } else {
-            return 0x7f;
-        }
-    } else if ((~querydc00 & 0x40) && (shiftctrlcode & 1)) {  // *query* right shift key?
-        if (kbcode1 == 0xbf) {
-            // handle scan of key codes in the same "row"
-            return kbcode2 & 0xef;
-        } else {
-            return 0xef;
-        }
-    } else if ((~querydc00 & 0x80) && (shiftctrlcode & 2)) {  // *query* ctrl key?
-        if (kbcode1 == 0x7f) {
-            // handle scan of key codes in the same "row"
-            return kbcode2 & 0xfb;
-        } else {
-            return 0xfb;
-        }
-    } else if ((~querydc00 & 0x80) && (shiftctrlcode & 4)) {  // *query* commodore key?
-        if (kbcode1 == 0x7f) {
-            // handle scan of key codes in the same "row"
-            return kbcode2 & 0xdf;
-        } else {
-            return 0xdf;
-        }
-    }
-    // query "main" key press
-    if (querydc00 == kbcode1) {
-        return kbcode2;
-    } else {
-        return 0xff;
-    }
+    return result;
 }
 
 uint8_t KonsoolKB::getKBJoyValue(bool port2)
@@ -257,8 +240,15 @@ uint8_t KonsoolKB::getKBJoyValue(bool port2)
     return virtjoystickvalue;
 }
 
-void KonsoolKB::setKbcodes(uint8_t sentdc01, uint8_t sentdc00)
+void KonsoolKB::setKbcodes(uint8_t colmask, uint8_t rowmask)
 {
-    this->sentdc01 = sentdc01;
-    this->sentdc00 = sentdc00;
+    (void)rowmask;
+    for (int row = 0; row < 8; row++) {
+        keyarr[row] &= colmask;
+    }
+    for (int col = 0; col < 8; col++) {
+        if (!(colmask & (1 << col))) {
+            rev_keyarr[col] = 0x00;
+        }
+    }
 }
