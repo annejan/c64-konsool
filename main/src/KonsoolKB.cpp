@@ -19,6 +19,7 @@ extern "C" {
 #include <esp_log.h>
 #include "bsp/audio.h"
 #include "bsp/input.h"
+#include "hid_gamepad.h"
 }
 #include <cstdint>
 #include <cstring>
@@ -237,7 +238,8 @@ uint8_t KonsoolKB::getdc01(uint8_t querydc00, bool xchgports)
 
 uint8_t KonsoolKB::getKBJoyValue(bool port2)
 {
-    return virtjoystickvalue;
+    // Both are active low, so anding them wires the keyboard joystick and the USB gamepad together
+    return virtjoystickvalue & hid_gamepad_get_c64_joy();
 }
 
 void KonsoolKB::setKbcodes(uint8_t colmask, uint8_t rowmask)

@@ -15,6 +15,9 @@
  http://www.gnu.org/licenses/.
 */
 #include "CPUC64.hpp"
+extern "C" {
+#include "hid_gamepad.h"
+}
 #include <esp_log.h>
 #include <esp_random.h>
 #include <cstdint>
@@ -83,6 +86,10 @@ uint8_t CPUC64::getMem(uint16_t addr) {
         // ** CIA 1 **
         else if (addr <= 0xdcff) {
             kbjoystickmode = menuDataStore->getInt("kb_joystick_port", 0);
+            if (kbjoystickmode == 0 && hid_gamepad_connected()) {
+                // A connected USB gamepad defaults to port 2, the port most games use
+                kbjoystickmode = 2;
+            }
             uint8_t ciaidx = (addr - 0xdc00) % 0x10;
             if (ciaidx == 0x00) {
                 uint8_t ddra  = cia1.ciaReg[0x02];
