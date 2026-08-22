@@ -106,11 +106,11 @@ void MenuController::render()
         pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + i * 20, 800, 480 - 60 - i * 20);
         pax_draw_line(fb, 0xFFFF0000, 0, 60 + i * 20, 800, 60 + i * 20);
         i += 1;
-        pax_draw_image(fb, get_icon(ICON_F5), 10, 60 + i * 20);
+        pax_draw_image(fb, get_icon(ICON_F6), 10, 60 + i * 20);
         pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
                       "Switch between this menu and the Commodore 64");
         i += 1;
-        pax_draw_image(fb, get_icon(ICON_F6), 10, 60 + i * 20);
+        pax_draw_image(fb, get_icon(ICON_F5), 10, 60 + i * 20);
         pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
                       ("Switch joystick emulation between joystick port 1 and 2, current port: " +
                        std::to_string(currentJoystick))
