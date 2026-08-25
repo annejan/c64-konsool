@@ -8,6 +8,11 @@
 extern "C" {
 #endif
 
+// Quirks, the report descriptor parser and the decoder that works out which way a pad is being
+// pushed live in the badgeteam/hid-host component, since the launcher needs the same answer.
+// Include its hid_gamepad.h for hid_gamepad_quirk_t and hid_gamepad_find_quirk(). What is left
+// here is what a gamepad means to a C64.
+
 // Bits of the C64 joystick byte, all active low
 #define HID_GAMEPAD_C64_UP    (1 << 0)
 #define HID_GAMEPAD_C64_DOWN  (1 << 1)
@@ -17,29 +22,6 @@ extern "C" {
 
 // Idle value of the C64 joystick byte
 #define HID_GAMEPAD_C64_IDLE 0xff
-
-/// Value of dpad_first_button for gamepads whose buttons are all just buttons
-#define HID_GAMEPAD_NO_DPAD_BUTTONS (-1)
-
-/// @brief Everything known about a gamepad that its report descriptor does not tell us
-///
-/// Add a row to hid_gamepad_quirks in hid_gamepad.c to support another gamepad.
-typedef struct {
-    uint16_t    vid;
-    uint16_t    pid;
-    const char *name;
-
-    /// Feature report that makes the gamepad start sending input reports, NULL when it needs no nudge
-    uint8_t        enable_report_id;
-    const uint8_t *enable_report;
-    size_t         enable_report_length;
-
-    /// Index of the first of four buttons that act as a d-pad, in the order up, right, down, left
-    int dpad_first_button;
-} hid_gamepad_quirk_t;
-
-/// @brief Look up the quirks of a gamepad, NULL when it needs none
-const hid_gamepad_quirk_t *hid_gamepad_find_quirk(uint16_t vid, uint16_t pid);
 
 /// @brief Whether a usable USB gamepad is connected
 bool hid_gamepad_connected(void);

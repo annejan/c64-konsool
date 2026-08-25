@@ -12,6 +12,7 @@
 #include "bsp/power.h"
 
 #include "hid_gamepad.h"
+#include "hid_gamepad_c64.h"
 
 static const char *TAG = "hid_kbd";
 

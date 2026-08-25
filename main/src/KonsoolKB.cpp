@@ -19,7 +19,7 @@ extern "C" {
 #include <esp_log.h>
 #include "bsp/audio.h"
 #include "bsp/input.h"
-#include "hid_gamepad.h"
+#include "hid_gamepad_c64.h"
 }
 #include <cstdint>
 #include <cstring>

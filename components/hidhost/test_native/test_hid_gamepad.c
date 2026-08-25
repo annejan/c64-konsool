@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "hid_gamepad.h"
+#include "hid_gamepad_c64.h"
 #include "test_descriptors.h"
 #include "test_reports.h"
 
