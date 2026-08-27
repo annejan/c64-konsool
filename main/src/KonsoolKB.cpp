@@ -264,10 +264,14 @@ uint8_t KonsoolKB::getdc01(uint8_t querydc00, bool xchgports)
     return result;
 }
 
-uint8_t KonsoolKB::getKBJoyValue(bool port2)
+uint8_t KonsoolKB::getKBJoyValue()
 {
-    // Both are active low, so anding them wires the keyboard joystick and the USB gamepad together
-    return virtjoystickvalue & hid_gamepad_get_c64_joy();
+    return virtjoystickvalue;
+}
+
+uint8_t KonsoolKB::getGamepadJoyValue()
+{
+    return hid_gamepad_get_c64_joy();
 }
 
 void KonsoolKB::setKbcodes(uint8_t colmask, uint8_t rowmask)

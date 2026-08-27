@@ -119,9 +119,11 @@ void MenuController::render()
         i += 2;
         pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
                       "To enable joystick emulation set 'Joystick emulation' to 'On' in this menu.\n"
+                      "With 'Two players' on, the keyboard joystick keeps the port shown above and a USB\n"
+                      "gamepad takes the other one, so two people can play at the same time.\n"
                       "You can change the volume of the speaker and headphone output using the volume up\n"
                       "and down keys on the right side of the device.\n");
-        i += 4;
+        i += 6;
 
         pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
                       " - Loading D64 images is not supported, you can only load PRG images.");

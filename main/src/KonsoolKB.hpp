@@ -59,6 +59,7 @@ class KonsoolKB {
     void    handleKeyPress();
     void    handleGamepadMenuInput();
     uint8_t getdc01(uint8_t dc00, bool xchgports);
-    uint8_t getKBJoyValue(bool port2);
+    uint8_t getKBJoyValue();
+    uint8_t getGamepadJoyValue();
     void    setKbcodes(uint8_t colmask, uint8_t rowmask);
 };

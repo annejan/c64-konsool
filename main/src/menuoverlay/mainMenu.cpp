@@ -80,7 +80,8 @@ bool MainMenu::init()
     usb_load_prg->submenu  = usbLoadMenu;
     items.push_back(*usb_load_prg);
 
-    // Joystick port, shared by the keyboard joystick emulation and USB gamepads
+    // Joystick port used by the keyboard joystick emulation, and by a USB gamepad
+    // unless two player mode puts the gamepad on the other port
     MenuItem* joystick_port   = new MenuItem();
     joystick_port->id         = id_count++;
     joystick_port->type       = MenuItemType::ACTION;
@@ -103,6 +104,16 @@ bool MainMenu::init()
     joystick_emu->value_name = "kb_joystick_emu";
     menuDataStore->set("kb_joystick_emu", false);
     items.push_back(*joystick_emu);
+
+    // Two players: the keyboard joystick stays on the port above and a USB gamepad
+    // takes the other one, so two people can play at the same time
+    MenuItem* two_player   = new MenuItem();
+    two_player->id         = id_count++;
+    two_player->title      = "Two players (gamepad on other port): ";
+    two_player->type       = MenuItemType::TOGGLE;
+    two_player->value_name = "two_player";
+    menuDataStore->set("two_player", false);
+    items.push_back(*two_player);
 
     // Speaker audio enable/disable
     MenuItem* speaker_emu   = new MenuItem();
