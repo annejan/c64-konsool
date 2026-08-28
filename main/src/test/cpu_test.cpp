@@ -129,6 +129,34 @@ class TestCpu : public CPU6502 {
     {
         setPCToIntVec(vec, fromBrk);
     }
+    void setA(uint8_t v)
+    {
+        a = v;
+    }
+    uint8_t getA() const
+    {
+        return a;
+    }
+    void setX(uint8_t v)
+    {
+        x = v;
+    }
+    uint8_t getX() const
+    {
+        return x;
+    }
+    void setY(uint8_t v)
+    {
+        y = v;
+    }
+    bool getZ() const
+    {
+        return zflag;
+    }
+    bool getN() const
+    {
+        return nflag;
+    }
 };
 
 static int checks   = 0;
@@ -241,6 +269,88 @@ static void testStackWraps()
     CHECK(cpu.getSp() == 0x00, "sp did not wrap back to $00, it is $%02x", cpu.getSp());
 }
 
+// Klaus Dormann's suite only walks the documented opcodes. Loaders reach for
+// the undocumented ones constantly, and SBX in particular is how a loader
+// counts a block down: it subtracts without a carry to worry about.
+static void testSbx()
+{
+    printf("6502: SBX subtracts the operand from A AND X\n");
+    TestCpu cpu;
+
+    // $a0 - $e0 borrows: the answer is $c0 and the carry comes out clear.
+    cpu.begin(0x4000);
+    cpu.setA(0xa0);
+    cpu.setX(0xa0);
+    cpu.mem[0x4000] = 0xcb;  // SBX #
+    cpu.mem[0x4001] = 0xe0;
+    cpu.stepOne();
+    CHECK(cpu.getX() == 0xc0, "SBX #$e0 on A=X=$a0 left $%02x, expected $c0", cpu.getX());
+    CHECK(!cpu.getC(), "SBX set the carry on a borrow");
+    CHECK(cpu.getN(), "SBX did not set N from the result");
+    CHECK(!cpu.getZ(), "SBX set Z on a result of $c0");
+    CHECK(cpu.getA() == 0xa0, "SBX changed the accumulator");
+
+    // No borrow: the carry stays set, as after a compare that was not less.
+    cpu.begin(0x4000);
+    cpu.setA(0xff);
+    cpu.setX(0xff);
+    cpu.mem[0x4000] = 0xcb;
+    cpu.mem[0x4001] = 0x01;
+    cpu.stepOne();
+    CHECK(cpu.getX() == 0xfe, "SBX #$01 on A=X=$ff left $%02x, expected $fe", cpu.getX());
+    CHECK(cpu.getC(), "SBX cleared the carry without a borrow");
+
+    // Equal values leave zero with the carry set.
+    cpu.begin(0x4000);
+    cpu.setA(0x3c);
+    cpu.setX(0xff);
+    cpu.mem[0x4000] = 0xcb;
+    cpu.mem[0x4001] = 0x3c;
+    cpu.stepOne();
+    CHECK(cpu.getX() == 0x00, "SBX of equal values left $%02x, expected $00", cpu.getX());
+    CHECK(cpu.getZ(), "SBX did not set Z on a result of zero");
+    CHECK(cpu.getC(), "SBX cleared the carry on equal values");
+
+    // The AND happens before the subtraction, not after it.
+    cpu.begin(0x4000);
+    cpu.setA(0x0f);
+    cpu.setX(0xf0);
+    cpu.mem[0x4000] = 0xcb;
+    cpu.mem[0x4001] = 0x01;
+    cpu.stepOne();
+    CHECK(cpu.getX() == 0xff, "SBX did the AND after the subtraction, X is $%02x", cpu.getX());
+}
+
+// The pointer for (zp),y lives in page zero and does not walk out of it.
+static void testIndirectYWrapsInZeroPage()
+{
+    printf("6502: an indirect pointer at $ff takes its high byte from $00\n");
+    TestCpu cpu;
+    cpu.begin(0x4000);
+    cpu.setY(0x00);
+    cpu.mem[0x00ff] = 0x34;
+    cpu.mem[0x0000] = 0x12;  // the high byte the real chip reads
+    cpu.mem[0x0100] = 0x99;  // what it would read if the pointer ran on
+    cpu.mem[0x1234] = 0x5a;
+    cpu.mem[0x9934] = 0xa5;
+
+    cpu.mem[0x4000] = 0xb1;  // LDA (zp),Y
+    cpu.mem[0x4001] = 0xff;
+    cpu.stepOne();
+    CHECK(cpu.getA() == 0x5a, "read through $%04x, expected $1234 (a is $%02x)",
+          cpu.getA() == 0xa5 ? 0x9934 : 0, cpu.getA());
+
+    // Indexing still crosses out of the pointed-at page as usual.
+    cpu.begin(0x4000);
+    cpu.setY(0x10);
+    cpu.mem[0x1244] = 0x77;
+    cpu.mem[0x4000] = 0xb1;
+    cpu.mem[0x4001] = 0xff;
+    cpu.stepOne();
+    CHECK(cpu.getA() == 0x77, "indexing off the wrapped pointer gave $%02x, expected $77",
+          cpu.getA());
+}
+
 static bool loadImage(TestCpu& cpu, const std::string& path)
 {
     int fd = open(path.c_str(), O_RDONLY);
@@ -310,6 +420,8 @@ int main(int argc, char** argv)
     testBrkSetsBreakFlag();
     testRtiRestores();
     testStackWraps();
+    testSbx();
+    testIndirectYWrapsInZeroPage();
 
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

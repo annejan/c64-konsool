@@ -133,6 +133,28 @@ running it over a whole pre-existing file produces a large diff of unrelated
 changes. Format new files freely; for edits to existing ones, keep to the
 local style of the surrounding code instead.
 
+## 6502 timing
+
+Codebase64 is the reference for this, at **https://codebase.c64.org/** -- see
+`base:6510_instruction_timing`. Note that `codebase64.org` is a DIFFERENT
+domain and now redirects to an unrelated site; it is not the wiki any more.
+
+The rules that matter, because ordinary code never notices them and a fast
+loader is made of nothing else:
+
+- Absolute indexed and indirect indexed **reads** take one extra cycle when the
+  index carries into the high byte. `LDA $nnnn,X` is 4 or 5; `LDA ($nn),Y` is 5
+  or 6.
+- **Writes** always take the higher count, fixed, because the chip always reads
+  the address first: `STA $nnnn,X` is always 5, `STA ($nn),Y` always 6.
+- **Read-modify-write** is likewise fixed: `INC $nnnn,X` and `ASL $nnnn,X` are
+  always 7. Giving either of these a conditional cycle is a bug.
+- Branches are 2 not taken, 3 taken, 4 taken across a page boundary.
+
+Klaus Dormann's suite checks results, not timing, so it passes with every one
+of these wrong. Only a fast loader notices, and it shows up as corrupt data
+rather than as a crash.
+
 ## Emulator references
 
 The drive emulation follows [Frodo](https://github.com/cebix/frodo4), and the

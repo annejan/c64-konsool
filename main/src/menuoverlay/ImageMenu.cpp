@@ -80,13 +80,28 @@ void ImageMenu::displayMenu()
     if (isDisk) {
         MenuItem mountItem = MenuItem();
         mountItem.id       = 0xfffd;
-        mountItem.title    = "=== Mount as drive 8 ===";
+        mountItem.title    = "=== Mount as drive 8 (resets the C64) ===";
         mountItem.type     = MenuItemType::ACTION;
         mountItem.action   = [this](MenuItem* item) {
             (void)item;
             this->mountDisk();
         };
         items.push_back(mountItem);
+
+        // Turning the disk over in the middle of something. Only on offer when
+        // there is already a disk in the drive, since otherwise it is just a
+        // mount.
+        if (c64emu->externalCmds.diskMounted()) {
+            MenuItem flipItem = MenuItem();
+            flipItem.id       = 0xfffc;
+            flipItem.title    = "=== Swap in without resetting ===";
+            flipItem.type     = MenuItemType::ACTION;
+            flipItem.action   = [this](MenuItem* item) {
+                (void)item;
+                this->flipDisk();
+            };
+            items.push_back(flipItem);
+        }
     }
 
     for (size_t i = 0; i < imageEntries.size(); i++) {
@@ -143,6 +158,23 @@ void ImageMenu::mountDisk()
         ESP_LOGE(TAG, "could not mount %s", imageName.c_str());
     }
     vTaskDelay(500 / portTICK_PERIOD_MS);
+    menuController->hide();
+}
+
+// Changes the disk with everything left running, so a demo waiting for the
+// next side carries on where it was.
+void ImageMenu::flipDisk()
+{
+    ESP_LOGI(TAG, "swap selected for %s", imagePath.c_str());
+    ExternalCmds* ext = &c64emu->externalCmds;
+
+    if (ext->swapDisk(imagePath.c_str())) {
+        ESP_LOGI(TAG, "%s swapped in", imageName.c_str());
+    } else {
+        ESP_LOGE(TAG, "could not swap in %s", imageName.c_str());
+    }
+    // No reset and no delay: whatever is running should not notice anything
+    // beyond the disk changing under it.
     menuController->hide();
 }
 

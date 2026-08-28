@@ -135,6 +135,14 @@ class ExternalCmds {
     bool    loadImageEntryFromPath(const char* fullpath, uint16_t index);
     bool    mountDiskFromPath(const char* fullpath);
 
+    // Puts a different disk in the running drive without resetting anything.
+    // The C64 keeps going and so does the drive, which matters because a
+    // loader that has uploaded its own code into the drive would not survive a
+    // reset. The change is announced on the write protect line, the way a real
+    // drive announces it. Only useful with 1541 emulation on; with the kernal
+    // traps it just swaps the image.
+    bool    swapDisk(const char* fullpath);
+
     // Attaches a .d64 as drive 8 so the C64 can LOAD from it itself, rather
     // than having a program injected into memory. Returns false if the image
     // cannot be read or the Kernal traps could not be installed.

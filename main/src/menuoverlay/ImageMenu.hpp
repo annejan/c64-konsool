@@ -20,6 +20,7 @@ class ImageMenu : public MenuBaseClass {
     void displayMenu();
     void loadEntry(uint16_t index);
     void mountDisk();
+    void flipDisk();
     bool isDisk = false;
 
    public:

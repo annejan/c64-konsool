@@ -41,6 +41,12 @@ class DiskController {
     uint8_t      id1         = 0;
     uint8_t      id2         = 0;
 
+    // A disk being swapped is announced on the write protect line, which is
+    // the only way the drive can tell. Taking one out uncovers the photocell,
+    // putting one in covers it again, so the line moves whatever the two disks
+    // are. The DOS and every loader that cares watch for exactly that.
+    unsigned int changeCycles = 0;
+
     uint8_t gcrTrack[GCR_TRACK_SIZE];
     bool    trackDirty = false;
 
@@ -106,8 +112,23 @@ class DiskController {
     bool syncFound() const;
 
     // Port B bit 4 of VIA 2: low means write protected. A read only image, or
-    // no image at all, reports protected.
+    // no image at all, reports protected. While a disk is being swapped this
+    // reports the sequence a real drive produces instead.
     uint8_t writeProtectBit() const;
+
+    // Puts a different disk in without disturbing the drive. The head stays
+    // where it is and the drive CPU keeps running, so a loader that has
+    // uploaded its own code survives the swap, which is the whole point of
+    // being able to turn a disk over in the middle of a demo.
+    void swapDisk(DiskImage* image);
+
+    // Runs the swap sequence. Fed from the same byte clock that turns the disk.
+    void countChange(unsigned int cycles);
+
+    bool diskChanging() const
+    {
+        return changeCycles != 0;
+    }
 
     // Speed zone for the current track, as the drive would select it.
     uint8_t speedZone() const;

@@ -229,12 +229,15 @@ unsigned int Drive1541::stepInstruction()
 {
     if (!romLoaded) return 1;
 
+    // Sampled before the interrupt check, not after: taking an interrupt costs
+    // seven cycles of its own and the head has to turn for those too.
+    uint8_t before = numofcycles;
+
     // An interrupt from either VIA wakes the drive.
     if (!iflag && (via1.irqAsserted() || via2.irqAsserted())) {
         setPCToIntVec(static_cast<uint16_t>(getMem(0xfffe) | (getMem(0xffff) << 8)), false);
     }
 
-    uint8_t before = numofcycles;
     execute(getMem(pc++));
     uint8_t used = static_cast<uint8_t>(numofcycles - before);
     if (used == 0) used = 1;
@@ -252,6 +255,10 @@ unsigned int Drive1541::stepInstruction()
 // does once the command has been sent.
 void Drive1541::countByteReady(unsigned int cycles)
 {
+    // The swap runs on wall clock, not on the head, so it keeps going whether
+    // or not there is a disk to turn.
+    controller.countChange(cycles);
+
     // Nothing turns under the head unless there is a disk and the motor is on.
     if (!controller.hasDisk()) return;
     if ((via2.prb & via2.ddrb & VIA2_MOTOR) == 0) return;

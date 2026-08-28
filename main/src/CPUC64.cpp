@@ -282,7 +282,18 @@ void CPUC64::setMem(uint16_t addr, uint8_t val) {
         else if (addr <= 0xddff) {
             uint8_t ciaidx = (addr - 0xdd00) % 0x10;
             if (ciaidx == 0x00) {
-                uint8_t bank = val & 3;
+                // Bits 0 and 1 pick the VIC bank, and they follow the port
+                // pins rather than the latch: a bit left as an input floats
+                // high and reads as one whatever was written to it. A fast
+                // loader bit-bangs this register thousands of times a second
+                // and does not preserve those bits, precisely because it has
+                // left them as inputs. Spindle sets the data direction to
+                // $3c, so on real hardware the bank never moves; taking it
+                // from the written value alone put the VIC on a different 16K
+                // on every handshake, and it drew its bitmap, screen and
+                // charset out of whatever happened to be there.
+                uint8_t ddra = cia2.ciaReg[0x02];
+                uint8_t bank = static_cast<uint8_t>(val | ~ddra) & 3;
                 switch (bank) {
                     case 0:
                         vic->vicmem = 0xc000;
@@ -304,7 +315,7 @@ void CPUC64::setMem(uint16_t addr, uint8_t val) {
                 // The same register drives the serial bus. A one written to an
                 // output bit pulls its line low; a bit left as an input drives
                 // nothing.
-                uint8_t driven   = static_cast<uint8_t>(val & cia2.ciaReg[0x02]);
+                uint8_t driven   = static_cast<uint8_t>(val & ddra);
                 bool    atnWas   = iecLines.atnLow();
                 iecLines.c64Atn  = (driven & 0x08) != 0;
                 iecLines.c64Clk  = (driven & 0x10) != 0;
@@ -677,7 +688,10 @@ void IRAM_ATTR CPUC64::run() {
         }
         // execute CPU cycles and check CIA timers
         // (4 = average number of cycles for an instruction)
-        numofcycles              = 0;
+        // numofcycles is *not* cleared here: the counter is reset at the end of
+        // the previous line, so the seven cycles of any interrupt entered since
+        // then - the raster IRQ just above included - are charged against this
+        // line's budget instead of being thrown away.
         uint8_t numofcyclestoexe = 63 - badlinecycles - spritecycles - cycles_extra;
         uint8_t n                = 1;
         if (badlinecycles == 0) {
@@ -700,6 +714,12 @@ void IRAM_ATTR CPUC64::run() {
 
         // Make sure 63 cycles per rasterline on average
         cycles_extra = numofcycles - numofcyclestoexe;
+        // Reset the counter here rather than at the top of the next line, so
+        // that everything charged from now on - the sprite collision IRQ and
+        // the restore NMI below, the CIA interrupts in checkciatimers, and the
+        // raster IRQ at the top of the next line - lands in the next line's
+        // count instead of being wiped out by the reset.
+        numofcycles = 0;
         // TODO Add cycles access, > 63 gets subtracted from next rasterline
         checkciatimers(tmp);
         // draw rasterline
