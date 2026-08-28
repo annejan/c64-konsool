@@ -1,4 +1,5 @@
 #include "MainMenu.hpp"
+#include "Config.hpp"
 #include "C64Emu.hpp"
 #include "LoadMenu.hpp"
 #include "MenuDataStore.hpp"
@@ -42,6 +43,25 @@ bool MainMenu::init()
     load_prg->type     = MenuItemType::SUBMENU;
     load_prg->submenu  = loadMenu;
     items.push_back(*load_prg);
+
+    // True drive emulation. Needs the 1541 ROM on the card, so the toggle
+    // reports back if it could not be turned on.
+    MenuItem* true_drive   = new MenuItem();
+    true_drive->id         = id_count++;
+    true_drive->title      = "1541 emulation: ";
+    true_drive->type       = MenuItemType::TOGGLE;
+    true_drive->value_name = "true_drive_ena";
+    menuDataStore->set("true_drive_ena", false);
+    true_drive->action     = [this, menuDataStore](MenuItem* item) {
+        (void)item;
+        bool wanted = menuDataStore->getBool("true_drive_ena", false);
+        bool got    = this->c64emu->externalCmds.setTrueDriveEmulation(wanted);
+        if (wanted && !got) {
+            ESP_LOGE("MainMenu", "no " DRIVE_ROM_FILENAME " on the card");
+            menuDataStore->set("true_drive_ena", false);
+        }
+    };
+    items.push_back(*true_drive);
 
     // Separator
     MenuItem* sep1 = new MenuItem();

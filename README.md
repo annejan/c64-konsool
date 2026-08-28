@@ -34,7 +34,7 @@ Since the menu structure is still being developed, I'm going to not document mor
 | -------- | ---------------------------------------------------------------- |
 | **.PRG** | Full. Loaded straight into memory.                               |
 | **.T64** | Full. Pick a program from the tape container.                    |
-| **.D64** | Mountable as drive 8, with loading and saving.                   |
+| **.D64** | Mountable as drive 8, with loading and saving, or a real 1541.   |
 | .TAP     | Not supported, needs datasette emulation.                        |
 | .CRT     | Not supported, needs cartridge ROM banking.                      |
 
@@ -104,9 +104,7 @@ What this does **not** cover:
 
 - **Fast loaders.** A fast loader bit-bangs the serial lines directly and
   uploads its own code into the drive, so it never calls the Kernal routines
-  that are trapped. That needs a real 1541 with its own CPU, which is a
-  separate piece of work; the `IecDevice` interface exists so it can be added
-  underneath without disturbing anything above it.
+  that are trapped. For those, turn on 1541 emulation below.
 - **Formatting and copying** (`N` and `C` on the command channel), which
   answer `31,SYNTAX ERROR`.
 - **Appending** to an existing file (`,A`), which answers `30,SYNTAX ERROR`.
@@ -116,6 +114,53 @@ What this does **not** cover:
 
 If the card or the file will not open for writing, the image is mounted read
 only and everything above answers `26,WRITE PROTECT ON` instead.
+
+## 1541 emulation
+
+Turning on '1541 emulation' in the main menu replaces all of the above with an
+actual drive: a second 6502, its 2K of RAM, the DOS ROM, both 6522s and the
+disk surface as GCR. Fast loaders work because there is now a drive for them
+to upload their code into.
+
+### You need to supply the ROM
+
+The 1541 DOS ROM is a 16K copyrighted binary and is not shipped with this
+firmware. Put your own copy on the card next to the disk images:
+
+```
+/c64prg/1541.rom      exactly 16384 bytes
+```
+
+Without it the menu option turns itself back off and the Kernal traps stay in
+charge, which is a perfectly good way to run most software.
+
+### What it does
+
+The C64's `$DD00` now drives the serial bus for real, rather than the lines
+being stubbed out. Both machines pull ATN, CLK and DATA the way open collector
+hardware does, so a line is low when either end pulls it and only floats high
+when both let go. The drive answers on the bus through VIA 1, including the
+gate that holds DATA low until it has acknowledged an ATN.
+
+The two CPUs are interleaved an instruction at a time, following Frodo:
+whichever has fallen behind on cycles runs next. That is not cycle exact, but
+it keeps them close enough for loaders that hand bytes back and forth.
+
+Sectors are GCR encoded on the fly into a track image, and the head advances
+one byte each time the drive reads port A of VIA 2, which is Frodo's model
+too.
+
+### What it still will not do
+
+- **Copy protection.** Schemes that measure sync lengths, look for weak bits
+  or depend on exact rotation need bit level emulation with real timing, which
+  VICE does and this does not. It would also need G64 images: a .d64 has
+  already thrown away the information that protection relies on, so no
+  emulator can recover it from one.
+- **Writing through the drive.** The head is read only here, so saving needs
+  1541 emulation switched off. Frodo has the same limitation and patches the
+  ROM around it.
+- **Anything but a 1541.** No 1571, no 1581, one drive only, always device 8.
 
 ### Loading a .prg from BASIC
 
@@ -180,7 +225,7 @@ calls, so they can be built and run on a normal machine without ESP-IDF:
 
 ```bash
 make -C main/src/images/test run    # .t64 and .d64 parsing
-make -C main/src/drive/test run     # the drive and CBM DOS layer
+make -C main/src/drive/test run     # CBM DOS, GCR and the 1541 hardware
 ```
 
 The first builds synthetic images, including ones carrying the malformed
@@ -220,9 +265,10 @@ In VsCodium this can be done using the following statement in the settings.json
 ## Credits
 
 The drive emulation follows [Frodo](https://github.com/cebix/frodo4) by
-Christian Bauer, which does the same thing the same way: patch the Kernal's
-serial routines and answer them from a disk image. The Kernal status byte
-values come from its `IEC.h`.
+Christian Bauer, both halves of it: the Kernal trap approach and the real
+1541. The Kernal status byte values come from its `IEC.h`, the GCR tables and
+sector layout from `1541job.cpp`, and the serial port behaviour and CPU
+interleaving from `CPU1541.cpp` and `C64.cpp`.
 
 The directory listing layout, the status message format and the CBM DOS error
 texts are ported from [VICE](https://vice-emu.sourceforge.io/), and the
