@@ -527,13 +527,14 @@ uint8_t VIC::spriteDmaCycles()
 
     uint8_t spritesdoubley = vicreg[0x17];
     uint8_t spritesenabled = vicreg[0x15];
-    uint8_t deltay = vicreg[0x11] & 7;
     bool    den    = vicreg[0x11] & 16;  // Display enable
     uint8_t bitval         = 128;
     uint8_t steal_cycles   = 0;
 
+    // Sprites are positioned against the raster line itself. YSCROLL scrolls the
+    // character display and nothing else, so it must not enter this comparison.
     // Only 8 bit for line comparison, so sprites repeat if placed in extremes of the screen
-    uint8_t line = rasterline + deltay - 3;
+    uint8_t line = rasterline;
 
     // No sprite DMA when display is disabled
     if (!den) {
@@ -783,7 +784,7 @@ void IRAM_ATTR VIC::drawRasterline()
                 drawExtBGColCharMode(ram + screenmemstart, bgColArr, dline, deltay - 3, deltax);
             }
         }
-        drawSprites(rasterline + deltay - 3);
+        drawSprites(rasterline);
     }
 
     if ((rasterline >= 16) && (rasterline <= 276)) {
