@@ -252,13 +252,17 @@ void CPUC64::applyCia2PortA() {
     }
     adaptVICBaseAddrs(true);
 
-    // The same register drives the serial bus. A one written to an output bit
-    // pulls its line low; a bit left as an input drives nothing.
-    uint8_t driven   = static_cast<uint8_t>(val & ddra);
+    // The same register drives the serial bus, through inverting buffers. A
+    // line is released only by driving its bit with a zero: a one pulls the
+    // line low, and so does leaving the bit as an input, because the pin then
+    // floats high through its pull up and the inverter turns that into a
+    // pulled down line. Frodo builds the same value as "~pra & ddra", a set
+    // bit meaning the line is high (src/CIA.cpp, write_pa).
+    uint8_t released = static_cast<uint8_t>(~val & ddra);
     bool    atnWas   = iecLines.atnLow();
-    iecLines.c64Atn  = (driven & 0x08) != 0;
-    iecLines.c64Clk  = (driven & 0x10) != 0;
-    iecLines.c64Data = (driven & 0x20) != 0;
+    iecLines.c64Atn  = (released & 0x08) == 0;
+    iecLines.c64Clk  = (released & 0x10) == 0;
+    iecLines.c64Data = (released & 0x20) == 0;
     if (iecLines.atnLow() != atnWas) {
         onAtnChanged();
     }
