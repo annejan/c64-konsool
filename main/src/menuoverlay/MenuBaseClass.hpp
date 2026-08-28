@@ -1,4 +1,5 @@
 #pragma once
+#include "Theme.hpp"
 
 #include <cstdint>
 #include <string>
@@ -53,6 +54,10 @@ class MenuBaseClass {
     // Navigation
     size_t       getCurrentSelectedIndex(void);
     size_t       getPreviousSelectedIndex(void);
+    // How tall a row is on this screen. A settings list is short and can
+    // afford to breathe; a directory of a hundred entries cannot.
+    virtual int rowHeight() const;
+
     virtual void navigateBegin();
     void         navigateUp();
     void         navigateDown();
