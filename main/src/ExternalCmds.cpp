@@ -360,6 +360,51 @@ bool ExternalCmds::mountDiskFromPath(const char* fullpath) {
     return true;
 }
 
+bool ExternalCmds::swapDisk(const char* fullpath) {
+    ESP_LOGI(TAG, "swapping in %s, true drive %s", fullpath, trueDrive ? "on" : "off");
+
+    if (imageFormatFromName(fullpath) != ImageFormat::D64) {
+        ESP_LOGE(TAG, "%s is not a disk image", fullpath);
+        return false;
+    }
+    if (!mounted) {
+        // Nothing to swap for; this is an ordinary mount.
+        return mountDiskFromPath(fullpath);
+    }
+
+    // Read the new image before letting go of the old one, so a bad path
+    // leaves the drive with the disk it already had.
+    D64Disk next;
+    if (!next.open(fullpath)) {
+        ESP_LOGE(TAG, "cannot read disk image %s", fullpath);
+        return false;
+    }
+    next.close();
+
+    disk.close();
+    if (!disk.open(fullpath)) {
+        ESP_LOGE(TAG, "cannot reopen %s", fullpath);
+        mounted = false;
+        return false;
+    }
+
+    // The kernal traps read through the same image, so they need nothing else.
+    dos.setDisk(&disk);
+
+    if (trueDrive) {
+        // Deliberately not enableTrueDrive(): that resets the drive CPU, which
+        // would throw away a loader's uploaded code. Just change the disk under
+        // the head and let the drive notice.
+        c64emu->cpu.drive.swapDisk(&disk);
+    }
+
+    const char* name = strrchr(fullpath, '/');
+    name             = (name != nullptr) ? name + 1 : fullpath;
+    mountedName      = name;
+    ESP_LOGI(TAG, "swapped in %s", name);
+    return true;
+}
+
 void ExternalCmds::unmountDisk() {
     if (!mounted) return;
 
