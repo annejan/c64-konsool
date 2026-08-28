@@ -41,10 +41,16 @@ Since the menu structure is still being developed, I'm going to not document mor
 ### Loading files
 
 - Put your files in a directory named `c64prg` on the SD card. The directory is
-  created for you the first time the emulator starts with a card inserted.
+  created for you the first time the emulator starts with a card inserted. The
+  card mounts at `/sd`, so that path reads as `/sd/c64prg` in the log.
 
 - Open the menu, select 'Load file', and pick a file. Choosing a .t64 or .d64
-  opens a second menu listing the programs inside it; press ESC to go back.
+  opens a second menu listing the programs inside it; press ESC to go back. The
+  listing is sorted and paged; the page markers say which page you are on and
+  wrap around, so the end of a long listing is one step back from the first page.
+
+- A USB disk works the same way, through 'Load file from USB disk', which reads
+  the root of the disk rather than a `c64prg` directory.
 
 - When the C64 screen shows again, type the command 'run' and press enter.
 
@@ -131,8 +137,32 @@ firmware. Put your own copy on the card next to the disk images:
 /c64prg/1541.rom      exactly 16384 bytes
 ```
 
-Without it the menu option turns itself back off and the Kernal traps stay in
-charge, which is a perfectly good way to run most software.
+A VICE install already has one, in `/usr/share/vice/DRIVES/`, and there is a
+target that finds it, checks the size and puts it where it belongs:
+
+```bash
+make drive-rom                                   # drops ./1541.rom to copy by hand
+make drive-rom DEST=/run/media/you/SD/c64prg     # straight onto a mounted card
+```
+
+Set `VICE_DRIVES` if VICE is installed somewhere unusual. To do it by hand,
+either of these is the flat 16K the drive maps at `$C000`; copy one across and
+rename it:
+
+| File | What it is |
+| --- | --- |
+| `dos1541-325302-01+901229-05.bin` | The original 1541, its two 8K parts joined. This is the one to start with. |
+| `dos1541ii-251968-03.bin` | The 1541-II, one 16K part, DOS 2.6 with the later fixes. Worth trying if a fast loader misbehaves. |
+
+Anything that is not exactly 16384 bytes is rejected, with the size it found in
+the log.
+
+Without the ROM the menu option turns itself back off and the Kernal traps stay
+in charge, which is a perfectly good way to run most software.
+
+The rest of the emulator needs nothing on the card: the C64's own KERNAL, BASIC
+and character ROMs are compiled into the firmware, in `main/src/roms/`. The
+1541 DOS ROM is the only one read at runtime.
 
 ### What it does
 

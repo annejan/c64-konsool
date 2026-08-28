@@ -13,6 +13,9 @@ class MenuBaseClass {
     MenuDataStore* const menuDataStore         = MenuDataStore::getInstance();
     size_t               selectedItemIndex     = 0;
     size_t               prevSelectedItemIndex = 0;
+    // The list scrolls rather than paging, so a menu may hold far more items
+    // than fit on screen. This is the first one drawn.
+    size_t               firstVisibleItem      = 0;
 
    protected:
     std::string           title;
@@ -37,6 +40,15 @@ class MenuBaseClass {
     // Menu structure
     MenuBaseClass*        getParentMenu() const;
     std::vector<MenuItem> getItems() const;
+
+    size_t getFirstVisibleItem() const
+    {
+        return firstVisibleItem;
+    }
+    void setFirstVisibleItem(size_t first)
+    {
+        firstVisibleItem = first;
+    }
 
     // Navigation
     size_t       getCurrentSelectedIndex(void);

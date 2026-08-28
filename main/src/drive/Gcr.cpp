@@ -124,7 +124,9 @@ void gcrEncodeSector(const uint8_t* block, unsigned int track, unsigned int sect
     gcrConv4(buf, p);
     p += 5;
 
-    memset(p, GCR_GAP_BYTE, GCR_DATA_GAP);
+    // The tail gap runs to the start of the next sector. Its length is what
+    // spreads the track's spare capacity evenly between the sectors.
+    memset(p, GCR_GAP_BYTE, gcrSectorSizeForTrack(track) - GCR_SECTOR_BODY);
 }
 
 bool gcrEncodeTrack(DiskImage& disk, unsigned int track, uint8_t id1, uint8_t id2, uint8_t* dest)
@@ -133,13 +135,16 @@ bool gcrEncodeTrack(DiskImage& disk, unsigned int track, uint8_t id1, uint8_t id
     if (sectors == 0) return false;
 
     // Anything past the last sector stays gap, so the head reads something
-    // harmless rather than stale bytes from a longer track.
-    memset(dest, GCR_GAP_BYTE, GCR_TRACK_SIZE);
+    // harmless rather than stale bytes from a longer track. Only the track's
+    // own length is written; the rest of the buffer belongs to longer tracks
+    // and the head never reaches it.
+    memset(dest, GCR_GAP_BYTE, gcrTrackBytes(track));
 
-    uint8_t block[CBM_SECTOR_SIZE];
+    unsigned int stride = gcrSectorSizeForTrack(track);
+    uint8_t      block[CBM_SECTOR_SIZE];
     for (unsigned int sector = 0; sector < sectors; sector++) {
         if (!disk.readSector(track, sector, block)) return false;
-        gcrEncodeSector(block, track, sector, id1, id2, dest + sector * GCR_SECTOR_SIZE);
+        gcrEncodeSector(block, track, sector, id1, id2, dest + sector * stride);
     }
     return true;
 }

@@ -340,7 +340,7 @@ static void testControllerReadsTrack()
     // Track 18 sector 0 should be recoverable from the byte stream the head
     // hands over, which is what the drive's own read routines do.
     std::vector<uint8_t> seen;
-    for (unsigned int i = 0; i < GCR_TRACK_SIZE; i++) {
+    for (unsigned int i = 0; i < controller.trackLength(); i++) {
         seen.push_back(controller.readGcrByte());
     }
 
@@ -421,12 +421,12 @@ static void testHeadWritesReachTheImage()
     for (unsigned int i = 0; i < CBM_SECTOR_SIZE; i++) {
         replacement[i] = static_cast<uint8_t>(0xa0 + (i & 0x0f));
     }
-    uint8_t encoded[GCR_SECTOR_SIZE];
+    uint8_t encoded[GCR_SECTOR_SIZE_MAX];
     gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
 
     // The head starts at the beginning of the track, so writing the encoded
     // sector straight through lands it on sector 0.
-    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+    for (unsigned int i = 0; i < gcrSectorSizeForTrack(18); i++) {
         controller.writeGcrByte(encoded[i]);
     }
 
@@ -465,9 +465,9 @@ static void testHeadWriteStepsFlush()
 
     uint8_t replacement[CBM_SECTOR_SIZE];
     memset(replacement, 0x5c, sizeof(replacement));
-    uint8_t encoded[GCR_SECTOR_SIZE];
+    uint8_t encoded[GCR_SECTOR_SIZE_MAX];
     gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
-    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+    for (unsigned int i = 0; i < gcrSectorSizeForTrack(18); i++) {
         controller.writeGcrByte(encoded[i]);
     }
 
@@ -495,9 +495,9 @@ static void testWriteRefusedOnReadOnlyImage()
 
     uint8_t replacement[CBM_SECTOR_SIZE];
     memset(replacement, 0x77, sizeof(replacement));
-    uint8_t encoded[GCR_SECTOR_SIZE];
+    uint8_t encoded[GCR_SECTOR_SIZE_MAX];
     gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
-    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+    for (unsigned int i = 0; i < gcrSectorSizeForTrack(18); i++) {
         controller.writeGcrByte(encoded[i]);
     }
     controller.flush();
@@ -522,7 +522,7 @@ static void testGarbledTrackIsNotWrittenBack()
     // Write noise over the start of the track, wrecking the header and the
     // data block. Nothing recognisable is there, so nothing should be written
     // back rather than a wrong guess landing on a real sector.
-    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+    for (unsigned int i = 0; i < gcrSectorSizeForTrack(18); i++) {
         controller.writeGcrByte(static_cast<uint8_t>(0x33));
     }
     controller.flush();
@@ -765,7 +765,7 @@ static void testDriveCpuWritesTheHead()
     // The head is now two bytes along. Reading the rest of the way round
     // brings it back to where the writes landed.
     DiskController& controller = drive.disk();
-    for (unsigned int i = 0; i < GCR_TRACK_SIZE - 2; i++) {
+    for (unsigned int i = 0; i < controller.trackLength() - 2; i++) {
         controller.readGcrByte();
     }
     uint8_t first  = controller.readGcrByte();

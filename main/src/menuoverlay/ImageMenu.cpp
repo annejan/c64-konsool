@@ -33,8 +33,6 @@ bool ImageMenu::openImage(const std::string& path)
     size_t slash = path.find_last_of('/');
     imageName    = (slash == std::string::npos) ? path : path.substr(slash + 1);
     imageEntries.clear();
-    currentPage = 0;
-    nextPage    = 0;
 
     ImageFormat format = imageFormatFromName(imageName);
     isDisk             = (format == ImageFormat::D64);
@@ -79,7 +77,7 @@ void ImageMenu::displayMenu()
     // A disk can be handed to the C64 whole, so it can LOAD from it the way it
     // would from a real drive. That is the only route that works for anything
     // that loads more than one part.
-    if (isDisk && currentPage == 0) {
+    if (isDisk) {
         MenuItem mountItem = MenuItem();
         mountItem.id       = 0xfffd;
         mountItem.title    = "=== Mount as drive 8 ===";
@@ -91,21 +89,7 @@ void ImageMenu::displayMenu()
         items.push_back(mountItem);
     }
 
-    if (currentPage != 0) {
-        MenuItem prevPageItem = MenuItem();
-        prevPageItem.id       = 0xfffe;
-        prevPageItem.title    = "=== Prev Page ===";
-        prevPageItem.type     = MenuItemType::ACTION;
-        prevPageItem.action   = [this](MenuItem* item) {
-            (void)item;
-            this->toPrevPage();
-        };
-        items.push_back(prevPageItem);
-    }
-
-    size_t start = static_cast<size_t>(currentPage) * pageSize;
-    size_t shown = 0;
-    for (size_t i = start; i < imageEntries.size() && shown < pageSize; i++, shown++) {
+    for (size_t i = 0; i < imageEntries.size(); i++) {
         const ImageEntry& entry = imageEntries[i];
 
         char label[40];
@@ -123,38 +107,12 @@ void ImageMenu::displayMenu()
         items.push_back(item);
     }
 
-    if (start + shown < imageEntries.size()) {
-        MenuItem nextPageItem = MenuItem();
-        nextPageItem.id       = 0xffff;
-        nextPageItem.title    = "=== Next Page ===";
-        nextPageItem.type     = MenuItemType::ACTION;
-        nextPageItem.action   = [this](MenuItem* item) {
-            (void)item;
-            this->toNextPage();
-        };
-        items.push_back(nextPageItem);
-    }
-
     if (items.empty()) {
         MenuItem empty = MenuItem();
         empty.id       = 0;
         empty.title    = "(no programs found)";
         empty.type     = MenuItemType::SPACER;
         items.push_back(empty);
-    }
-}
-
-void ImageMenu::toNextPage()
-{
-    nextPage++;
-    navigateBegin();
-}
-
-void ImageMenu::toPrevPage()
-{
-    if (nextPage > 0) {
-        nextPage--;
-        navigateBegin();
     }
 }
 
@@ -190,8 +148,4 @@ void ImageMenu::mountDisk()
 
 void ImageMenu::update()
 {
-    if (currentPage != nextPage) {
-        currentPage = nextPage;
-        displayMenu();
-    }
 }
