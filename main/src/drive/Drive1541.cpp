@@ -42,6 +42,7 @@ void Drive1541::reset()
     // reset() flushes anything pending before parking the head.
     controller.reset();
     lastStepperPhase = 0;
+    byteReadyCycles  = 0;
     cpuhalted        = false;
 
     if (lines != nullptr) {
@@ -225,7 +226,35 @@ unsigned int Drive1541::stepInstruction()
     uint8_t before = numofcycles;
     execute(getMem(pc++));
     uint8_t used = static_cast<uint8_t>(numofcycles - before);
-    return used > 0 ? used : 1;
+    if (used == 0) used = 1;
+
+    countByteReady(used);
+    return used;
+}
+
+// The head shifts a bit at a time and the controller pulses BYTE READY on
+// every eighth one. That line is wired to the 6502's SO pin, which sets the
+// overflow flag from outside the instruction stream, and it is the only way
+// the DOS knows a byte has arrived: it waits with "BVC *", clears the flag
+// with CLV and then reads the head. Without it the drive sits in that branch
+// forever the first time it touches the disk, which is exactly what a LOAD
+// does once the command has been sent.
+void Drive1541::countByteReady(unsigned int cycles)
+{
+    // Nothing turns under the head unless there is a disk and the motor is on.
+    if (!controller.hasDisk()) return;
+    if ((via2.prb & via2.ddrb & VIA2_MOTOR) == 0) return;
+
+    // One byte is eight bit cells, and the bit rate is what the speed zone
+    // selects: the outer tracks hold more, so their bytes come round sooner.
+    static const unsigned int cyclesPerByte[4] = {32, 30, 28, 26};
+    unsigned int              perByte          = cyclesPerByte[controller.speedZone() & 3];
+
+    byteReadyCycles += cycles;
+    while (byteReadyCycles >= perByte) {
+        byteReadyCycles -= perByte;
+        vflag            = true;
+    }
 }
 
 unsigned int Drive1541::emulateCycles(unsigned int cycles)

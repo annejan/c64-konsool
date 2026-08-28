@@ -50,10 +50,15 @@ class Drive1541 : public CPU6502 {
     // moved when it changes.
     uint8_t lastStepperPhase = 0;
 
+    // Cycles counted towards the next BYTE READY pulse from the head.
+    unsigned int byteReadyCycles = 0;
+
     bool romLoaded = false;
 
     void updateIecOutputs();
     void updateStepper(uint8_t portB);
+    // Runs the head's byte clock and pulses BYTE READY when a byte is due.
+    void countByteReady(unsigned int cycles);
 
     uint8_t readVia1(uint8_t reg);
     uint8_t readVia2(uint8_t reg);
