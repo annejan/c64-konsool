@@ -226,6 +226,7 @@ calls, so they can be built and run on a normal machine without ESP-IDF:
 ```bash
 make -C main/src/images/test run    # .t64 and .d64 parsing
 make -C main/src/drive/test run     # CBM DOS, GCR and the 1541 hardware
+make -C main/src/test run           # the 6502 itself
 ```
 
 The first builds synthetic images, including ones carrying the malformed
@@ -234,6 +235,15 @@ right addresses. The second drives the emulated drive through the same bus
 commands the Kernal issues, and checks that what comes back is what a real 1541
 would return, down to the directory column layout and the status message
 format.
+
+The third runs the CPU against [Klaus Dormann's functional test
+suite](https://github.com/Klaus2m5/6502_65C02_functional_tests), which walks
+every documented opcode, addressing mode and flag rule including decimal
+arithmetic, and traps the moment one is wrong. Both the C64 and the emulated
+1541 run on that same core, so a fault there would surface as software
+misbehaving in ways that are painful to track down on hardware. The suite
+image is vendored in `main/src/test`; it is Copyright (C) 2012-2015 Klaus
+Dormann under the GPL version 3, the same licence as this project.
 
 ## Upload to the Tanmatsu
 
