@@ -21,11 +21,6 @@ class UsbLoadMenu : public MenuBaseClass {
     // stay consistent while walking through them.
     std::vector<std::string> entries;
     void                     refreshEntries();
-    size_t                   pageCount() const;
-
-    uint16_t currentPage = 0;
-    uint16_t nextPage     = 0;
-    size_t   pageSize     = 12;
     bool     needsRefresh = true;
 
    public:
@@ -35,7 +30,5 @@ class UsbLoadMenu : public MenuBaseClass {
     bool init() override;
     void update() override;
     void navigateBegin() override;
-    void toPrevPage();
-    void toNextPage();
     void displayMenu();
 };

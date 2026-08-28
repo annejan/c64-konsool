@@ -56,27 +56,10 @@ void LoadMenu::displayMenu()
         return;
     }
 
-    size_t pages = pageCount();
-    if (currentPage >= pages) currentPage = 0;
-
-    char label[40];
-    if (pages > 1) {
-        snprintf(label, sizeof(label), "=== Prev page (%u/%u) ===", static_cast<unsigned>(currentPage + 1),
-                 static_cast<unsigned>(pages));
-        MenuItem prevPageItem = MenuItem();
-        prevPageItem.id       = 0xfffe;
-        prevPageItem.title    = label;
-        prevPageItem.type     = MenuItemType::ACTION;
-        prevPageItem.action   = [this](MenuItem* item) {
-            (void)item;
-            this->toPrevPage();
-        };
-        items.push_back(prevPageItem);
-    }
-
-    size_t   start    = static_cast<size_t>(currentPage) * pageSize;
+    // Every file goes in the list; the menu overlay scrolls it. Paging was
+    // only ever there because the overlay drew every item it was given.
     uint16_t id_count = 0;
-    for (size_t i = start; i < entries.size() && i < start + pageSize; i++) {
+    for (size_t i = 0; i < entries.size(); i++) {
         const std::string filename = entries[i];
 
         MenuItem item = MenuItem();
@@ -89,47 +72,11 @@ void LoadMenu::displayMenu()
         };
         items.push_back(item);
     }
-
-    if (pages > 1) {
-        snprintf(label, sizeof(label), "=== Next page (%u/%u) ===", static_cast<unsigned>(currentPage + 1),
-                 static_cast<unsigned>(pages));
-        MenuItem nextPageItem = MenuItem();
-        nextPageItem.id       = 0xffff;
-        nextPageItem.title    = label;
-        nextPageItem.type     = MenuItemType::ACTION;
-        nextPageItem.action   = [this](MenuItem* item) {
-            (void)item;
-            this->toNextPage();
-        };
-        items.push_back(nextPageItem);
-    }
 }
 
 void LoadMenu::refreshEntries()
 {
     entries = SDCard::listLoadableFiles(SD_CARD_PRG_PATH);
-}
-
-size_t LoadMenu::pageCount() const
-{
-    if (entries.empty()) return 1;
-    return (entries.size() + pageSize - 1) / pageSize;
-}
-
-void LoadMenu::toNextPage()
-{
-    // Wrapping means a file at the end of a long listing is one step back
-    // from the first page rather than a walk through every page in between.
-    nextPage = static_cast<uint16_t>((currentPage + 1) % pageCount());
-    // Deliberately not navigateBegin(): that override jumps back to the first
-    // page, which is right when entering the menu and wrong when paging.
-    MenuBaseClass::navigateBegin();
-}
-
-void LoadMenu::toPrevPage()
-{
-    nextPage = static_cast<uint16_t>((currentPage + pageCount() - 1) % pageCount());
-    MenuBaseClass::navigateBegin();
 }
 
 void LoadMenu::openFile(const std::string& filename)
@@ -181,7 +128,6 @@ void LoadMenu::openImage(const std::string& filename)
 void LoadMenu::navigateBegin()
 {
     needsRefresh = true;
-    nextPage     = 0;
     MenuBaseClass::navigateBegin();
 }
 
@@ -190,10 +136,6 @@ void LoadMenu::update()
     if (needsRefresh) {
         needsRefresh = false;
         refreshEntries();
-        currentPage = nextPage;
-        displayMenu();
-    } else if (currentPage != nextPage) {
-        currentPage = nextPage;
         displayMenu();
     }
 }
@@ -203,8 +145,6 @@ bool LoadMenu::init()
     sdcard->init();
     ESP_LOGI(TAG, "initializing load menu");
     needsRefresh = true;
-    currentPage  = 0;
-    nextPage     = 0;
     displayMenu();
     return true;
 }

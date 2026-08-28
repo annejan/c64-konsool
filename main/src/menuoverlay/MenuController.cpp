@@ -1,4 +1,5 @@
 #include "MenuController.hpp"
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include "C64Emu.hpp"
@@ -71,35 +72,74 @@ void MenuController::render()
     }
 
     const auto& items = currentMenu->getItems();
-    // ESP_LOGI(TAG, "Menu items: %d", items.size());
-    size_t      i     = 0;
-    for (const auto& item : items) {
-        if (full_update || i == currentMenu->getPreviousSelectedIndex() ||
-            i == currentMenu->getCurrentSelectedIndex()) {
-            uint32_t    color = currentMenu->getSelectedItemIndex() == i ? 0xFFFF0000 : 0xFF002255;
+
+    // The screen fits this many rows below the title bar. Longer lists scroll
+    // with the selection instead of being broken into pages.
+    static const size_t MENU_ROWS = 20;
+
+    size_t total = items.size();
+    size_t rows  = total < MENU_ROWS ? total : MENU_ROWS;
+    size_t first = currentMenu->getFirstVisibleItem();
+    size_t sel   = currentMenu->getSelectedItemIndex();
+
+    // Keep the selection on screen, moving the window by as little as possible.
+    if (sel < first) first = sel;
+    if (sel >= first + MENU_ROWS) first = sel - MENU_ROWS + 1;
+    if (total <= MENU_ROWS) {
+        first = 0;
+    } else if (first + MENU_ROWS > total) {
+        first = total - MENU_ROWS;
+    }
+    if (first != currentMenu->getFirstVisibleItem()) {
+        // Everything moved, so the rows that were on screen are all stale.
+        currentMenu->setFirstVisibleItem(first);
+        full_update = true;
+        pax_background(fb, 0xFFFFFFFF);
+        pax_draw_rect(fb, 0xFF002255, 0, 0, 800, 40);
+        pax_draw_text(fb, 0xFFFFFFFF, pax_font_saira_regular, 18, 10, 10, currentMenu->getTitle().c_str());
+    }
+
+    for (size_t row = 0; row < rows; row++) {
+        size_t idx = first + row;
+        if (idx >= total) break;
+        const MenuItem& item = items[idx];
+
+        if (full_update || idx == currentMenu->getPreviousSelectedIndex() ||
+            idx == currentMenu->getCurrentSelectedIndex()) {
+            uint32_t    color = currentMenu->getSelectedItemIndex() == idx ? 0xFFFF0000 : 0xFF002255;
             std::string title;
             switch (item.type) {
                 case MenuItemType::TOGGLE: {
                     bool checked = menuDataStore->getBool(item.value_name, false);
-                    title        = (((currentMenu->getSelectedItemIndex() == i) ? "> " : "  ") + item.title +
+                    title        = (((currentMenu->getSelectedItemIndex() == idx) ? "> " : "  ") + item.title +
                                     (checked ? "On" : "Off"));
                     break;
                 }
                 case MenuItemType::SPACER: {
-                    title = "";
+                    title = item.title;
                     break;
                 }
                 default: {
-                    title = (((currentMenu->getSelectedItemIndex() == i) ? "> " : "  ") + item.title);
+                    title = (((currentMenu->getSelectedItemIndex() == idx) ? "> " : "  ") + item.title);
                     break;
                 }
             }
-            // ESP_LOGI(TAG, "Menu Item %d: %s", i, title.c_str());
-            pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + i * 20, 800, 20);
-            pax_draw_text(fb, color, pax_font_saira_regular, 18, 30, 60 + i * 20, title.c_str());
+            pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + row * 20, 800, 20);
+            pax_draw_text(fb, color, pax_font_saira_regular, 18, 30, 60 + row * 20, title.c_str());
         }
-        ++i;
     }
+
+    // Say where we are in a list that does not fit, so paging through a card
+    // full of programs is not done blind.
+    if (full_update && total > MENU_ROWS) {
+        char counter[48];
+        snprintf(counter, sizeof(counter), "%u-%u of %u", static_cast<unsigned>(first + 1),
+                 static_cast<unsigned>(first + rows), static_cast<unsigned>(total));
+        pax_draw_rect(fb, 0xFFFFFFFF, 600, 10, 200, 20);
+        pax_draw_text(fb, 0xFFFFFFFF, pax_font_saira_regular, 18, 640, 10, counter);
+    }
+
+    size_t i = rows;
 
     if (currentMenu == rootMenu && (full_update || prevJoystick != currentJoystick)) {
         i += 2;
@@ -126,7 +166,7 @@ void MenuController::render()
         i += 6;
 
         pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      " - Loading D64 images is not supported, you can only load PRG images.");
+                      " - PRG, T64 and D64 files load; a D64 can also be mounted as drive 8.");
 
         i += 1;
         pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,

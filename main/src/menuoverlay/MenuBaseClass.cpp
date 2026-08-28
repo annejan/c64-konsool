@@ -55,6 +55,7 @@ void MenuBaseClass::navigateBegin()
 {
     prevSelectedItemIndex = selectedItemIndex;
     selectedItemIndex     = 0;
+    firstVisibleItem      = 0;
 }
 
 void MenuBaseClass::navigateUp()

@@ -24,11 +24,6 @@ class LoadMenu : public MenuBaseClass {
     // per page, so the pages stay consistent while walking through them.
     std::vector<std::string> entries;
     void                     refreshEntries();
-    size_t                   pageCount() const;
-
-    uint16_t currentPage = 0;
-    uint16_t nextPage    = 0;
-    size_t   pageSize    = 12;
     // The card can be swapped while the menu sits there, so entering the menu
     // always rereads the directory rather than trusting what is on screen.
     bool     needsRefresh = true;
@@ -42,7 +37,5 @@ class LoadMenu : public MenuBaseClass {
     bool init() override;
     void update() override;
     void navigateBegin() override;
-    void toPrevPage();
-    void toNextPage();
     void displayMenu();
 };
