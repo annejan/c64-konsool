@@ -56,6 +56,9 @@ class Drive1541 : public CPU6502 {
     // the head on by itself, so the byte clock only turns the disk when the
     // byte went unread.
     bool         headReadThisByte = false;
+    // The byte last taken off the head. It stays on port A until the next
+    // BYTE READY, so reading twice inside one byte time reads it twice.
+    uint8_t      headByte         = 0;
 
     bool romLoaded = false;
 

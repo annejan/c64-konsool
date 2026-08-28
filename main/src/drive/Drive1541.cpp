@@ -44,6 +44,7 @@ void Drive1541::reset()
     lastStepperPhase = 0;
     byteReadyCycles  = 0;
     headReadThisByte = false;
+    headByte         = 0;
     cpuhalted        = false;
 
     if (lines != nullptr) {
@@ -117,10 +118,18 @@ uint8_t Drive1541::readVia2(uint8_t reg)
     switch (reg & 0x0f) {
         case Via6522::REG_PRA:
         case Via6522::REG_PRA_NH:
-            // Port A is the head. Reading it takes the next byte off the
-            // track, which is what advances the "rotation".
-            headReadThisByte = true;
-            return controller.readGcrByte();
+            // Port A is the head. The byte sits there until the next one
+            // arrives, so reading the port again inside the same byte time
+            // hands back the same byte rather than pulling the next one off
+            // the track. Letting every read take a byte lets the head outrun
+            // the disk: the DOS polls this port while it hunts for a sync
+            // mark, far faster than bytes actually arrive, and the head then
+            // races past every other sector.
+            if (!headReadThisByte) {
+                headReadThisByte = true;
+                headByte         = controller.readGcrByte();
+            }
+            return headByte;
 
         case Via6522::REG_PRB: {
             // Sync is active low, and the write protect sense sits alongside.
@@ -247,14 +256,6 @@ void Drive1541::countByteReady(unsigned int cycles)
     if (!controller.hasDisk()) return;
     if ((via2.prb & via2.ddrb & VIA2_MOTOR) == 0) return;
 
-    // BYTE READY only reaches the SO pin while the DOS holds the gate open.
-    // That gate is VIA 2's CA2, which the peripheral control register drives
-    // high with bits 3 to 1 set. The DOS opens it around the few instructions
-    // that take a byte off the head and closes it again straight after,
-    // because an overflow flag arriving unasked ruins every other branch it
-    // makes. Setting the flag regardless leaves the drive able to read a
-    // sector but unable to say anything about it afterwards.
-    if ((via2.pcr & 0x0e) != 0x0e) return;
 
     // One byte is eight bit cells, and the bit rate is what the speed zone
     // selects: the outer tracks hold more, so their bytes come round sooner.
@@ -268,12 +269,21 @@ void Drive1541::countByteReady(unsigned int cycles)
         if (!headReadThisByte) controller.rotate();
         headReadThisByte = false;
 
-        // The hardware holds the shift register while a sync mark is passing,
-        // so no byte is ever handed over from inside one. That is what makes
-        // the first byte after a sync the header mark the DOS compares
-        // against; delivering the sync bytes themselves fails that compare and
-        // every read comes back as an error.
-        if (!controller.syncFound()) vflag = true;
+        // BYTE READY only reaches the SO pin while the DOS holds the gate
+        // open. That gate is VIA 2's CA2, which the peripheral control
+        // register drives high with bits 3 to 1 set; the DOS opens it around
+        // the few instructions that take a byte off the head and shuts it
+        // again straight after, because an overflow flag arriving unasked
+        // ruins every other branch it makes. The gate stops the flag, not the
+        // disk: the motor keeps turning either way, and stopping the rotation
+        // with it means a sync mark never comes round and every read ends in
+        // "no sync found".
+        //
+        // The hardware also holds the shift register while a sync mark is
+        // passing, so no byte is ever handed over from inside one. That is
+        // what makes the first byte after a sync the header mark the DOS
+        // compares against.
+        if ((via2.pcr & 0x0e) == 0x0e && !controller.syncFound()) vflag = true;
     }
 }
 
