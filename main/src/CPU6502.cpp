@@ -64,7 +64,10 @@ void CPU6502::modeIndirectX() {
 }
 
 void CPU6502::modeIndirectY() {
-    uint16_t q   = getMem(pc++);
+    // The pointer lives in page zero and stays there: a pointer at $ff takes
+    // its high byte from $00, not from $0100. Making q a uint16_t let it walk
+    // out of the page.
+    uint8_t  q   = getMem(pc++);
     zl           = getMem(q++);
     zh           = getMem(q);
     uint16_t sum = (uint16_t)zl + y;
@@ -1833,9 +1836,15 @@ void CPU6502::cmd6502xaaImmediate() {
 }
 
 void CPU6502::cmd6502sbxImmediate() {
+    // SBX, also called AXS: X = (A & X) - immediate. The subtraction ignores
+    // the carry and borrows the way a compare does, so the carry comes out set
+    // when (A & X) was the larger. Taking the AND after the subtraction only
+    // agrees with that by coincidence: A=$a0 X=$a0 #$e0 has to leave $c0 in X
+    // and left $80 instead.
     uint8_t r = getMem(pc++);
-    x         = a & (x - r);
-    cmpbase(a & x, r);
+    uint8_t t = static_cast<uint8_t>(a & x);
+    cmpbase(t, r);
+    x = static_cast<uint8_t>(t - r);
     numofcycles += 2;
 }
 
