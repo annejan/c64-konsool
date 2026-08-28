@@ -308,13 +308,22 @@ bool ExternalCmds::mountDisk(const char* filename) {
         return false;
     }
 
+    // Set the DOS emulation up whichever drive is in charge. It only answers
+    // while the traps are installed, and having it ready means switching the
+    // 1541 off later leaves a working drive 8 rather than an empty bus.
+    dos.setDeviceNumber(8);
+    dos.setDisk(&disk);
+    c64emu->cpu.iecbus.attach(&dos);
+
     if (trueDrive) {
-        // The real drive reads the image itself, so the DOS emulation and the
-        // traps stay out of the way entirely.
+        // The real drive reads the image itself, so the traps stay out of the
+        // way entirely.
         c64emu->cpu.cpuhalted = true;
         bool ok               = c64emu->cpu.enableTrueDrive(driveRom, &disk);
         c64emu->cpu.cpuhalted = false;
         if (!ok) {
+            dos.setDisk(nullptr);
+            c64emu->cpu.iecbus.detach(8);
             disk.close();
             return false;
         }
@@ -323,10 +332,6 @@ bool ExternalCmds::mountDisk(const char* filename) {
         ESP_LOGI(TAG, "mounted %s in the emulated 1541", filename);
         return true;
     }
-
-    dos.setDeviceNumber(8);
-    dos.setDisk(&disk);
-    c64emu->cpu.iecbus.attach(&dos);
 
     // Installing the traps rewrites bytes in the kernal image the running CPU
     // is fetching from, so stop it for the moment it takes.
@@ -353,6 +358,8 @@ void ExternalCmds::unmountDisk() {
 
     if (trueDrive) {
         c64emu->cpu.disableTrueDrive();
+        dos.setDisk(nullptr);
+        c64emu->cpu.iecbus.detach(8);
         disk.close();
         mounted = false;
         mountedName.clear();

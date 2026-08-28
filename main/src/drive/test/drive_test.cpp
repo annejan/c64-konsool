@@ -3,10 +3,10 @@
 
      make -C main/src/drive/test drive
 
- The drive CPU itself needs a DOS ROM, which is not shipped, so what is
- checked here is everything around it: the VIA registers and timers, the
- wired-and behaviour of the serial lines, the attention acknowledge gate, and
- the head stepping.
+ Covers the VIA registers and timers, the wired-and behaviour of the serial
+ lines, the attention acknowledge gate and the head stepping, and boots the
+ drive CPU itself against a small hand assembled ROM so the real DOS ROM,
+ which cannot be shipped, is not needed.
 */
 
 #include <cstdio>
@@ -131,6 +131,36 @@ static void testViaTimer1()
     via.read(Via6522::REG_T1CL, 0, 0);
     via.countTimers(20);
     CHECK((via.ifr & Via6522::IRQ_T1) != 0, "free running timer did not flag again");
+}
+
+static void testViaTimer1OneShotFiresOnce()
+{
+    printf("VIA: a one shot timer 1 flags once, not every time it wraps\n");
+    Via6522 via;
+    via.reset();
+
+    via.write(Via6522::REG_ACR, 0x00);  // one shot
+    via.write(Via6522::REG_T1CL, 10);
+    via.write(Via6522::REG_T1CH, 0);
+
+    via.countTimers(20);
+    CHECK((via.ifr & Via6522::IRQ_T1) != 0, "the timer did not flag when it ran out");
+
+    via.read(Via6522::REG_T1CL, 0, 0);  // acknowledge
+    CHECK((via.ifr & Via6522::IRQ_T1) == 0, "the flag did not clear");
+
+    // The counter keeps running and wraps all the way round. On real hardware
+    // that does not raise the flag again until the timer is reloaded, and an
+    // extra interrupt here would look like a phantom one to the drive.
+    for (int i = 0; i < 300; i++) {
+        via.countTimers(255);
+    }
+    CHECK((via.ifr & Via6522::IRQ_T1) == 0, "the one shot timer flagged again after wrapping");
+
+    // Reloading arms it once more.
+    via.write(Via6522::REG_T1CH, 0);
+    via.countTimers(20);
+    CHECK((via.ifr & Via6522::IRQ_T1) != 0, "reloading did not re-arm the timer");
 }
 
 static void testViaInterruptGating()
@@ -486,7 +516,6 @@ static void testDriveCpuRuns()
     CHECK(drive.ready(), "the drive did not accept the ROM");
 
     drive.reset();
-    drive.idle = false;
 
     // It should be spinning on the ATN check, not off in the weeds.
     drive.emulateCycles(200);
@@ -549,6 +578,26 @@ static void testDriveCpuCycleAccounting()
     CHECK(spent >= 100 && spent < 110, "a budget of 100 cycles spent %u", spent);
 }
 
+static void testLargeCycleBudget()
+{
+    printf("Drive: a cycle budget larger than a byte does not wrap\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildTestRom(rom);
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.reset();
+
+    // The CPU's own cycle counter is a byte. Counting a budget in it would
+    // wrap and spin forever the moment a caller asked for more than 255.
+    unsigned int spent = drive.emulateCycles(5000);
+    CHECK(spent >= 5000 && spent < 5010, "a budget of 5000 cycles spent %u", spent);
+}
+
 static void testDriveWithoutRom()
 {
     printf("Drive: with no ROM it stays inert rather than running wild\n");
@@ -570,6 +619,7 @@ int main()
 {
     testViaPorts();
     testViaTimer1();
+    testViaTimer1OneShotFiresOnce();
     testViaInterruptGating();
     testLinesAreWiredAnd();
     testAtnAcknowledgeGate();
@@ -581,6 +631,7 @@ int main()
     testDriveMemoryMap();
     testDriveCpuRuns();
     testDriveCpuCycleAccounting();
+    testLargeCycleBudget();
     testDriveWithoutRom();
 
     printf("\n%d checks, %d failures\n", checks, failures);

@@ -41,7 +41,6 @@ void Drive1541::reset()
     via2.reset();
     controller.reset();
     lastStepperPhase = 0;
-    idle             = false;
     cpuhalted        = false;
 
     if (lines != nullptr) {
@@ -210,15 +209,13 @@ unsigned int Drive1541::emulateCycles(unsigned int cycles)
 {
     if (!romLoaded) return cycles;
 
-    numofcycles = 0;
-    while (numofcycles < cycles) {
-        // An interrupt from either VIA wakes the drive.
-        if (!iflag && (via1.irqAsserted() || via2.irqAsserted())) {
-            setPCToIntVec(static_cast<uint16_t>(getMem(0xfffe) | (getMem(0xffff) << 8)), false);
-        }
-        execute(getMem(pc++));
+    // numofcycles is only a byte, so the budget is counted separately: a
+    // caller asking for more than 255 cycles would otherwise wrap and spin.
+    unsigned int spent = 0;
+    while (spent < cycles) {
+        spent += stepInstruction();
     }
-    return numofcycles;
+    return spent;
 }
 
 void Drive1541::run()

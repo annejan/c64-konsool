@@ -2,19 +2,20 @@
 
 void Via6522::reset()
 {
-    pra  = 0;
-    ddra = 0;
-    prb  = 0;
-    ddrb = 0;
-    t1c  = 0;
-    t1l  = 0;
-    t2c  = 0;
-    t2ll = 0;
-    sr   = 0;
-    acr  = 0;
-    pcr  = 0;
-    ifr  = 0;
-    ier  = 0;
+    pra     = 0;
+    ddra    = 0;
+    prb     = 0;
+    ddrb    = 0;
+    t1c     = 0;
+    t1l     = 0;
+    t2c     = 0;
+    t2ll    = 0;
+    sr      = 0;
+    acr     = 0;
+    pcr     = 0;
+    ifr     = 0;
+    ier     = 0;
+    t1Fired = false;
 }
 
 void Via6522::updateIrqFlag()
@@ -35,12 +36,18 @@ void Via6522::countTimers(unsigned int cycles)
         if (freeRunning) {
             uint16_t period = static_cast<uint16_t>(t1l + 1);
             if (period == 0) period = 1;
-            unsigned int overshoot = cycles - t1c;
-            t1c                    = static_cast<uint16_t>(period - (overshoot % period));
+            unsigned int overshoot  = cycles - t1c;
+            t1c                     = static_cast<uint16_t>(period - (overshoot % period));
+            ifr                    |= IRQ_T1;
         } else {
             t1c = static_cast<uint16_t>(t1c - cycles);
+            // One shot: the counter carries on wrapping, but the flag is only
+            // raised the first time round.
+            if (!t1Fired) {
+                t1Fired  = true;
+                ifr     |= IRQ_T1;
+            }
         }
-        ifr |= IRQ_T1;
     } else {
         t1c = static_cast<uint16_t>(t1c - cycles);
     }
@@ -141,9 +148,10 @@ void Via6522::write(uint8_t reg, uint8_t value)
         case REG_T1CH:
             // Writing the high byte loads the counter from the latch and
             // clears the pending interrupt.
-            t1l = static_cast<uint16_t>((t1l & 0x00ff) | (value << 8));
-            t1c = t1l;
-            ifr = static_cast<uint8_t>(ifr & ~IRQ_T1);
+            t1l     = static_cast<uint16_t>((t1l & 0x00ff) | (value << 8));
+            t1c     = t1l;
+            t1Fired = false;
+            ifr     = static_cast<uint8_t>(ifr & ~IRQ_T1);
             updateIrqFlag();
             break;
 

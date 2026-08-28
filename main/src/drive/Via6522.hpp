@@ -71,6 +71,11 @@ class Via6522 {
     uint8_t  ifr  = 0;
     uint8_t  ier  = 0;
 
+    // In one shot mode timer 1 raises its flag once per load. The counter
+    // keeps running and wraps, so without this it would flag again every time
+    // it came round.
+    bool t1Fired = false;
+
     void reset();
 
     // Runs both timers for `cycles`, raising their interrupt flags. Timer 1
