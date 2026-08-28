@@ -22,3 +22,9 @@ jobs:
 
       - name: Drive and CBM DOS tests
         run: make -C main/src/drive/test run
+
+      # Klaus Dormann's suite walks every documented opcode, addressing mode
+      # and flag rule, including decimal arithmetic. Around 30 million
+      # instructions, a few seconds.
+      - name: 6502 functional test suite
+        run: make -C main/src/test run
