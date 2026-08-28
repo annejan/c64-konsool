@@ -190,6 +190,16 @@ bool ExternalCmds::loadImageEntry(const char* filename, uint16_t index) {
 
 bool ExternalCmds::loadImageEntryFromPath(const char* fullpath, uint16_t index) {
     ESP_LOGI(TAG, "load entry %u of %s", static_cast<unsigned>(index), fullpath);
+
+    // Taking a program off a disk is not the same as being handed a .prg: the
+    // program usually expects that disk to still be in the drive, because the
+    // next part comes off it. Leave it mounted, which also brings the 1541 on
+    // when its ROM is on the card. Do this before the CPU is halted below,
+    // since mounting halts and releases it in its own right.
+    if (imageFormatFromName(fullpath) == ImageFormat::D64) {
+        mountDiskFromPath(fullpath);
+    }
+
     c64emu->cpu.cpuhalted = true;
 
     T64Image  t64;
