@@ -162,8 +162,59 @@ bool DiskController::syncFound() const
     return gcrTrack[headPos] == 0xff;
 }
 
+// How long each part of a swap is held, in drive cycles. Following VICE's
+// drive_writeprotect_sense(): the disk coming out, then the gap before another
+// can go in, then the new one going in. The drive cannot see a disk change any
+// other way, so these have to last long enough for the DOS to notice.
+static const unsigned int CHANGE_REMOVE = 200000;   // disk pulled out
+static const unsigned int CHANGE_GAP    = 400000;   // nothing in the drive
+static const unsigned int CHANGE_INSERT = 600000;   // new disk going in
+static const unsigned int CHANGE_TOTAL  = CHANGE_REMOVE + CHANGE_GAP + CHANGE_INSERT;
+
+void DiskController::swapDisk(DiskImage* image)
+{
+    // Anything written to the old disk has to reach it before it comes out.
+    flushTrack();
+
+    disk        = image;
+    trackLoaded = false;
+    trackDirty  = false;
+
+    id1 = 0;
+    id2 = 0;
+    if (disk != nullptr) {
+        uint8_t bam[CBM_SECTOR_SIZE];
+        if (disk->readSector(disk->dirTrack(), 0, bam)) {
+            id1 = bam[0xA2];
+            id2 = bam[0xA3];
+        }
+    }
+
+    // Deliberately not reset(): the head stays on its track and the drive CPU
+    // is left alone. loadTrack() keeps the rotational position, so the disk
+    // carries on turning from where it was.
+    loadTrack();
+
+    changeCycles = CHANGE_TOTAL;
+}
+
+void DiskController::countChange(unsigned int cycles)
+{
+    if (changeCycles == 0) return;
+    changeCycles = (changeCycles > cycles) ? changeCycles - cycles : 0;
+}
+
 uint8_t DiskController::writeProtectBit() const
 {
+    // While a disk is being swapped the line moves through the states a real
+    // drive produces, whatever the disks themselves say. Without this the
+    // drive has no way of knowing anything happened.
+    if (changeCycles != 0) {
+        if (changeCycles > CHANGE_GAP + CHANGE_INSERT) return 0x00;  // coming out
+        if (changeCycles > CHANGE_INSERT) return 0x10;               // drive empty
+        return 0x00;                                                 // going in
+    }
+
     // Bit 4 low means write protected.
     if (disk != nullptr && disk->writable()) return 0x10;
     return 0x00;

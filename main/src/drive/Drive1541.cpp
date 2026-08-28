@@ -252,6 +252,10 @@ unsigned int Drive1541::stepInstruction()
 // does once the command has been sent.
 void Drive1541::countByteReady(unsigned int cycles)
 {
+    // The swap runs on wall clock, not on the head, so it keeps going whether
+    // or not there is a disk to turn.
+    controller.countChange(cycles);
+
     // Nothing turns under the head unless there is a disk and the motor is on.
     if (!controller.hasDisk()) return;
     if ((via2.prb & via2.ddrb & VIA2_MOTOR) == 0) return;

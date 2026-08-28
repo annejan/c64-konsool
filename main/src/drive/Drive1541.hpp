@@ -92,6 +92,13 @@ class Drive1541 : public CPU6502 {
     {
         lines = busLines;
     }
+    // Puts a different disk in with the drive still running, so a loader that
+    // has uploaded its own code into the drive survives it.
+    void swapDisk(DiskImage* image)
+    {
+        controller.swapDisk(image);
+    }
+
     void setDisk(DiskImage* image)
     {
         controller.setDisk(image);
