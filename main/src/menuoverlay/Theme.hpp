@@ -67,9 +67,9 @@ static const int BODY_SIZE  = 18;
 static const int SCROLL_W    = 4;
 static const int SCROLL_INSET = 8;
 
-// Where a toggle's value and a directory entry's block count line up. Fixed
-// columns rather than measured text, so the digits form a column.
-static const int VALUE_COL  = 620;
-static const int BLOCKS_COL = 330;
+// Where a toggle's value lines up. A fixed column rather than measured text,
+// so the values form a column. A directory's block count is placed from the
+// glyph width instead, since that depends on the row height.
+static const int VALUE_COL = 620;
 
 }  // namespace Theme

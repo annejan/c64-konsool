@@ -75,11 +75,15 @@ void MenuController::render()
     const int    rowH      = currentMenu->rowHeight();
     const size_t MENU_ROWS = static_cast<size_t>(Theme::CONTENT_H / rowH);
 
-    // A PETSCII name is drawn at two screen pixels per ROM pixel, so a
-    // character is 16 wide. A CBM name is 16 characters, plus one for the
-    // splat marker an unclosed file gets.
-    static const int   PETSCII_SCALE = 2;
-    static const float PETSCII_COL_X = Theme::SIDE_PAD;
+    // The glyphs are scaled to fill the row exactly. A disk draws its title
+    // box out of characters that are meant to touch, so any leading above or
+    // below breaks the vertical bars into dashes. At a 24 pixel row that is
+    // three screen pixels per ROM pixel; the division is what keeps the two
+    // in step if either changes. A CBM name is 16 characters, plus one for
+    // the splat marker an unclosed file gets.
+    const int   PETSCII_SCALE = rowH / PETSCII_CELL > 0 ? rowH / PETSCII_CELL : 1;
+    const float PETSCII_COL_X = Theme::SIDE_PAD;
+    const float BLOCKS_X      = PETSCII_COL_X + 17 * PETSCII_CELL * PETSCII_SCALE + 12;
 
     size_t total = items.size();
     size_t rows  = total < MENU_ROWS ? total : MENU_ROWS;
@@ -139,8 +143,8 @@ void MenuController::render()
             float glyphY = rowY + static_cast<float>(rowH - 8 * PETSCII_SCALE) / 2.0f;
             pax_draw_petscii(fb, Theme::TEXT_PRIMARY, PETSCII_COL_X, glyphY, item.petscii, PETSCII_SCALE);
             if (!inert && !item.title.empty()) {
-                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE, Theme::BLOCKS_COL,
-                              textY, item.title.c_str());
+                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE, BLOCKS_X, textY,
+                              item.title.c_str());
             }
             continue;
         }
