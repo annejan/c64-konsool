@@ -20,22 +20,24 @@
 static int failures = 0;
 static int checks   = 0;
 
-#define CHECK(cond, ...)                                       \
-    do {                                                       \
-        checks++;                                              \
-        if (!(cond)) {                                         \
-            failures++;                                        \
-            printf("  FAIL %s:%d: ", __FILE__, __LINE__);      \
-            printf(__VA_ARGS__);                               \
-            printf("\n");                                      \
-        }                                                      \
+#define CHECK(cond, ...)                                  \
+    do {                                                  \
+        checks++;                                         \
+        if (!(cond)) {                                    \
+            failures++;                                   \
+            printf("  FAIL %s:%d: ", __FILE__, __LINE__); \
+            printf(__VA_ARGS__);                          \
+            printf("\n");                                 \
+        }                                                 \
     } while (0)
 
-static std::string tmpPath(const char* name) {
+static std::string tmpPath(const char* name)
+{
     return std::string("/tmp/konsool-imgtest-") + name;
 }
 
-static void writeFile(const std::string& path, const std::vector<uint8_t>& data) {
+static void writeFile(const std::string& path, const std::vector<uint8_t>& data)
+{
     int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         printf("cannot write %s\n", path.c_str());
@@ -46,19 +48,22 @@ static void writeFile(const std::string& path, const std::vector<uint8_t>& data)
     close(fd);
 }
 
-static void putLe16(std::vector<uint8_t>& v, size_t off, uint16_t val) {
+static void putLe16(std::vector<uint8_t>& v, size_t off, uint16_t val)
+{
     v[off]     = static_cast<uint8_t>(val & 0xff);
     v[off + 1] = static_cast<uint8_t>(val >> 8);
 }
 
-static void putLe32(std::vector<uint8_t>& v, size_t off, uint32_t val) {
+static void putLe32(std::vector<uint8_t>& v, size_t off, uint32_t val)
+{
     v[off]     = static_cast<uint8_t>(val & 0xff);
     v[off + 1] = static_cast<uint8_t>((val >> 8) & 0xff);
     v[off + 2] = static_cast<uint8_t>((val >> 16) & 0xff);
     v[off + 3] = static_cast<uint8_t>((val >> 24) & 0xff);
 }
 
-static void putPetName(std::vector<uint8_t>& v, size_t off, const char* name, uint8_t pad, size_t len) {
+static void putPetName(std::vector<uint8_t>& v, size_t off, const char* name, uint8_t pad, size_t len)
+{
     for (size_t i = 0; i < len; i++) {
         v[off + i] = (i < strlen(name)) ? static_cast<uint8_t>(name[i]) : pad;
     }
@@ -75,7 +80,8 @@ struct T64File {
 
 // Builds a T64 whose records are laid out back to back after the record table.
 static std::vector<uint8_t> buildT64(const std::vector<T64File>& files, uint16_t recMax, uint16_t recUsed,
-                                     const char* magic, size_t trailingPad = 0) {
+                                     const char* magic, size_t trailingPad = 0)
+{
     size_t dirSize    = files.size() * 32;
     size_t dataOffset = 0x40 + dirSize;
 
@@ -92,9 +98,9 @@ static std::vector<uint8_t> buildT64(const std::vector<T64File>& files, uint16_t
 
     size_t off = dataOffset;
     for (size_t i = 0; i < files.size(); i++) {
-        size_t rec       = 0x40 + i * 32;
-        img[rec + 0x00]  = 1;     // normal tape file
-        img[rec + 0x01]  = 0x82;  // PRG
+        size_t rec      = 0x40 + i * 32;
+        img[rec + 0x00] = 1;     // normal tape file
+        img[rec + 0x01] = 0x82;  // PRG
         putLe16(img, rec + 0x02, files[i].startAddr);
         putLe16(img, rec + 0x04, files[i].declaredEnd);
         putLe32(img, rec + 0x08, static_cast<uint32_t>(off));
@@ -109,11 +115,12 @@ static std::vector<uint8_t> buildT64(const std::vector<T64File>& files, uint16_t
     return img;
 }
 
-static void testT64Basic() {
+static void testT64Basic()
+{
     printf("T64: two files, honest end addresses\n");
     std::vector<T64File> files;
-    T64File a = {"HELLO", 0x0801, static_cast<uint16_t>(0x0801 + 100), 100};
-    T64File b = {"SECOND", 0xC000, static_cast<uint16_t>(0xC000 + 50), 50};
+    T64File              a = {"HELLO", 0x0801, static_cast<uint16_t>(0x0801 + 100), 100};
+    T64File              b = {"SECOND", 0xC000, static_cast<uint16_t>(0xC000 + 50), 50};
     files.push_back(a);
     files.push_back(b);
 
@@ -137,12 +144,13 @@ static void testT64Basic() {
     CHECK(ram[0xC000] == 7, "payload mismatch, got %u", ram[0xC000]);
 }
 
-static void testT64BadEndAddress() {
+static void testT64BadEndAddress()
+{
     printf("T64: the $C3C6 end address bug\n");
     std::vector<T64File> files;
     // CONV64 wrote $C3C6 as the end address of every file it packed.
-    T64File a = {"BROKEN", 0x0801, 0xC3C6, 100};
-    T64File b = {"AFTER", 0x2000, 0xC3C6, 40};
+    T64File              a = {"BROKEN", 0x0801, 0xC3C6, 100};
+    T64File              b = {"AFTER", 0x2000, 0xC3C6, 40};
     files.push_back(a);
     files.push_back(b);
 
@@ -162,10 +170,11 @@ static void testT64BadEndAddress() {
     CHECK(end == 0x2000 + 40, "end was $%04x, expected $%04x", end, 0x2000 + 40);
 }
 
-static void testT64ZeroCounters() {
+static void testT64ZeroCounters()
+{
     printf("T64: zeroed record counters\n");
     std::vector<T64File> files;
-    T64File a = {"ONLYONE", 0x0801, static_cast<uint16_t>(0x0801 + 64), 64};
+    T64File              a = {"ONLYONE", 0x0801, static_cast<uint16_t>(0x0801 + 64), 64};
     files.push_back(a);
 
     std::string path = tmpPath("zerocount.t64");
@@ -176,10 +185,11 @@ static void testT64ZeroCounters() {
     CHECK(img.entries().size() == 1, "expected 1 entry, got %zu", img.entries().size());
 }
 
-static void testT64AltMagicAndPadding() {
+static void testT64AltMagicAndPadding()
+{
     printf("T64: alternate signature and a padded last record\n");
     std::vector<T64File> files;
-    T64File a = {"PADDED", 0x0801, static_cast<uint16_t>(0x0801 + 30), 30};
+    T64File              a = {"PADDED", 0x0801, static_cast<uint16_t>(0x0801 + 30), 30};
     files.push_back(a);
 
     std::string path = tmpPath("padded.t64");
@@ -195,11 +205,12 @@ static void testT64AltMagicAndPadding() {
     CHECK(end == 0x0801 + 30, "padding was loaded as data, end was $%04x", end);
 }
 
-static void testT64Overflow() {
+static void testT64Overflow()
+{
     printf("T64: entry that would run past $FFFF is clamped\n");
     std::vector<T64File> files;
     // Loads near the top of memory and claims far more data than fits.
-    T64File a = {"TOOBIG", 0xFF00, 0xFFFF, 0x4000};
+    T64File              a = {"TOOBIG", 0xFF00, 0xFFFF, 0x4000};
     files.push_back(a);
 
     std::string path = tmpPath("overflow.t64");
@@ -216,7 +227,8 @@ static void testT64Overflow() {
     CHECK(end <= 0xFFFF && end > 0xFF00, "end was $%04x", end);
 }
 
-static void testT64Rejects() {
+static void testT64Rejects()
+{
     printf("T64: rejects non-T64 input\n");
     std::vector<uint8_t> junk(1024, 0x41);
     std::string          path = tmpPath("junk.t64");
@@ -229,7 +241,8 @@ static void testT64Rejects() {
 
 /* ------------------------------------------------------------------ D64 -- */
 
-static size_t d64Offset(unsigned int track, unsigned int sector) {
+static size_t d64Offset(unsigned int track, unsigned int sector)
+{
     size_t off = 0;
     for (unsigned int t = 1; t < track; t++) {
         off += D64Image::sectorsPerTrack(t) * 256;
@@ -244,7 +257,8 @@ struct D64File {
 };
 
 // Lays the files out from track 1 onward and writes a directory on track 18.
-static std::vector<uint8_t> buildD64(const std::vector<D64File>& files, unsigned int tracks, bool errorInfo) {
+static std::vector<uint8_t> buildD64(const std::vector<D64File>& files, unsigned int tracks, bool errorInfo)
+{
     size_t blocks = 0;
     for (unsigned int t = 1; t <= tracks; t++) {
         blocks += D64Image::sectorsPerTrack(t);
@@ -262,9 +276,9 @@ static std::vector<uint8_t> buildD64(const std::vector<D64File>& files, unsigned
     std::vector<Placed> placed;
 
     for (size_t f = 0; f < files.size(); f++) {
-        const std::vector<uint8_t>& data  = files[f].data;
-        size_t                      pos   = 0;
-        Placed                      first = {0, 0};
+        const std::vector<uint8_t>& data      = files[f].data;
+        size_t                      pos       = 0;
+        Placed                      first     = {0, 0};
         bool                        haveFirst = false;
 
         while (pos < data.size() || !haveFirst) {
@@ -305,23 +319,24 @@ static std::vector<uint8_t> buildD64(const std::vector<D64File>& files, unsigned
     }
 
     // directory: slots of 32 bytes, 8 per sector, chained from 18/1
-    size_t dirOff = d64Offset(18, 1);
+    size_t dirOff   = d64Offset(18, 1);
     img[dirOff]     = 0;  // single directory sector is enough for the tests
     img[dirOff + 1] = 0xff;
     for (size_t f = 0; f < files.size() && f < 8; f++) {
-        size_t slot        = dirOff + f * 32;
-        img[slot + 2]      = static_cast<uint8_t>(files[f].closed ? 0x82 : 0x02);
-        img[slot + 3]      = static_cast<uint8_t>(placed[f].track);
-        img[slot + 4]      = static_cast<uint8_t>(placed[f].sector);
+        size_t slot   = dirOff + f * 32;
+        img[slot + 2] = static_cast<uint8_t>(files[f].closed ? 0x82 : 0x02);
+        img[slot + 3] = static_cast<uint8_t>(placed[f].track);
+        img[slot + 4] = static_cast<uint8_t>(placed[f].sector);
         putPetName(img, slot + 5, files[f].name, 0xA0, 16);
-        uint16_t nblocks   = static_cast<uint16_t>((files[f].data.size() + 253) / 254);
-        img[slot + 30]     = static_cast<uint8_t>(nblocks & 0xff);
-        img[slot + 31]     = static_cast<uint8_t>(nblocks >> 8);
+        uint16_t nblocks = static_cast<uint16_t>((files[f].data.size() + 253) / 254);
+        img[slot + 30]   = static_cast<uint8_t>(nblocks & 0xff);
+        img[slot + 31]   = static_cast<uint8_t>(nblocks >> 8);
     }
     return img;
 }
 
-static std::vector<uint8_t> makePrg(uint16_t loadAddr, size_t payloadLen, uint8_t seed) {
+static std::vector<uint8_t> makePrg(uint16_t loadAddr, size_t payloadLen, uint8_t seed)
+{
     std::vector<uint8_t> prg;
     prg.push_back(static_cast<uint8_t>(loadAddr & 0xff));
     prg.push_back(static_cast<uint8_t>(loadAddr >> 8));
@@ -331,10 +346,11 @@ static std::vector<uint8_t> makePrg(uint16_t loadAddr, size_t payloadLen, uint8_
     return prg;
 }
 
-static void testD64SingleSector() {
+static void testD64SingleSector()
+{
     printf("D64: file that fits in one sector\n");
     std::vector<D64File> files;
-    D64File a = {"SMALL", makePrg(0x0801, 100, 1), true};
+    D64File              a = {"SMALL", makePrg(0x0801, 100, 1), true};
     files.push_back(a);
 
     std::string path = tmpPath("small.d64");
@@ -357,11 +373,12 @@ static void testD64SingleSector() {
     }
 }
 
-static void testD64MultiSector() {
+static void testD64MultiSector()
+{
     printf("D64: file spanning many sectors\n");
     // 2000 bytes of payload needs nine data sectors and crosses a track
     std::vector<D64File> files;
-    D64File a = {"BIG", makePrg(0x0801, 2000, 5), true};
+    D64File              a = {"BIG", makePrg(0x0801, 2000, 5), true};
     files.push_back(a);
 
     std::string path = tmpPath("big.d64");
@@ -381,10 +398,11 @@ static void testD64MultiSector() {
     }
 }
 
-static void testD64Variants() {
+static void testD64Variants()
+{
     printf("D64: 40 track and error info variants\n");
     std::vector<D64File> files;
-    D64File a = {"ONFORTY", makePrg(0x0801, 300, 3), true};
+    D64File              a = {"ONFORTY", makePrg(0x0801, 300, 3), true};
     files.push_back(a);
 
     std::string p40 = tmpPath("forty.d64");
@@ -404,10 +422,11 @@ static void testD64Variants() {
     CHECK(end == 0x0801 + 300, "end was $%04x", end);
 }
 
-static void testD64SplatAndRejects() {
+static void testD64SplatAndRejects()
+{
     printf("D64: splat files and invalid input\n");
     std::vector<D64File> files;
-    D64File a = {"OPENFILE", makePrg(0x0801, 60, 9), false};
+    D64File              a = {"OPENFILE", makePrg(0x0801, 60, 9), false};
     files.push_back(a);
 
     std::string path = tmpPath("splat.d64");
@@ -416,8 +435,7 @@ static void testD64SplatAndRejects() {
     D64Image img;
     CHECK(img.open(path.c_str()), "open failed");
     CHECK(img.entries().size() == 1, "expected the splat file to be listed");
-    CHECK(img.entries()[0].name == "OPENFILE*", "splat marker missing, got '%s'",
-          img.entries()[0].name.c_str());
+    CHECK(img.entries()[0].name == "OPENFILE*", "splat marker missing, got '%s'", img.entries()[0].name.c_str());
 
     // wrong size is not a d64
     std::vector<uint8_t> junk(1000, 0);
@@ -427,11 +445,12 @@ static void testD64SplatAndRejects() {
     CHECK(!bad.open(jpath.c_str()), "accepted a file of the wrong size");
 }
 
-static void testD64Overflow() {
+static void testD64Overflow()
+{
     printf("D64: file that would run past $FFFF is clamped\n");
     std::vector<D64File> files;
     // 8000 bytes loading at $FF00 cannot possibly fit.
-    D64File a = {"TOOBIG", makePrg(0xFF00, 8000, 4), true};
+    D64File              a = {"TOOBIG", makePrg(0xFF00, 8000, 4), true};
     files.push_back(a);
 
     std::string path = tmpPath("overflow.d64");
@@ -446,17 +465,18 @@ static void testD64Overflow() {
     CHECK(end <= 0xFFFF && end > 0xFF00, "end was $%04x", end);
 }
 
-static void testD64CircularChain() {
+static void testD64CircularChain()
+{
     printf("D64: circular sector chain terminates\n");
     std::vector<D64File> files;
-    D64File a = {"LOOP", makePrg(0x0801, 600, 2), true};
+    D64File              a = {"LOOP", makePrg(0x0801, 600, 2), true};
     files.push_back(a);
 
-    std::vector<uint8_t> img = buildD64(files, 35, false);
+    std::vector<uint8_t> img   = buildD64(files, 35, false);
     // Point the first data sector's link back at itself.
-    size_t first = d64Offset(1, 0);
-    img[first]     = 1;
-    img[first + 1] = 0;
+    size_t               first = d64Offset(1, 0);
+    img[first]                 = 1;
+    img[first + 1]             = 0;
 
     std::string path = tmpPath("loop.d64");
     writeFile(path, img);
@@ -472,7 +492,8 @@ static void testD64CircularChain() {
 
 /* ---------------------------------------------------------------- misc -- */
 
-static void testFormatDetection() {
+static void testFormatDetection()
+{
     printf("format detection by extension\n");
     CHECK(imageFormatFromName("game.prg") == ImageFormat::PRG, "prg");
     CHECK(imageFormatFromName("GAME.PRG") == ImageFormat::PRG, "PRG uppercase");
@@ -482,7 +503,8 @@ static void testFormatDetection() {
     CHECK(imageFormatFromName("noextension") == ImageFormat::UNKNOWN, "no extension");
 }
 
-static void testPetsciiNames() {
+static void testPetsciiNames()
+{
     printf("PETSCII name conversion\n");
     uint8_t disk[16];
     memset(disk, 0xA0, sizeof(disk));
@@ -501,7 +523,8 @@ static void testPetsciiNames() {
     CHECK(petsciiToDisplay(control, 3) == "__A", "control codes not sanitised");
 }
 
-int main() {
+int main()
+{
     testFormatDetection();
     testPetsciiNames();
     testT64Basic();

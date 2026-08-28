@@ -98,7 +98,10 @@ bool D64Image::open(const char* path)
     off_t        blocks          = 683;  // blocks on a 35 track disk
     bool         matched         = false;
     while (true) {
-        if (fileSize == blocks * SECTOR_SIZE || fileSize == blocks * SECTOR_SIZE + blocks) {
+        off_t bytes = blocks * static_cast<off_t>(SECTOR_SIZE);
+        // Either the bare sectors, or the sectors plus one error info byte
+        // per block appended at the end.
+        if (fileSize == bytes || fileSize == bytes + blocks) {
             matched = true;
             break;
         }
