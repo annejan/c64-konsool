@@ -7,6 +7,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <strings.h>
+#include <algorithm>
 #include "Config.hpp"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -152,38 +154,43 @@ bool SDCard::save(const char* path, const uint8_t* ram, size_t len)
     return true;
 }
 
-std::vector<std::string> SDCard::listPagedEntries(const char* path, size_t page, size_t pageSize)
+std::vector<std::string> SDCard::listLoadableFiles(const char* path)
 {
     std::vector<std::string> result;
-
-    if (!initialized) return result;
-
-    ESP_LOGI(TAG, "list paged entries %s, page %zu, pageSize %zu", path, page, pageSize);
+    bool                     truncated = false;
 
     DIR* dir = opendir(path);
-    if (!dir) {
+    if (dir == nullptr) {
         ESP_LOGI(TAG, "cannot open %s", path);
         return result;
     }
 
-    // Only loadable files count towards a page. Letting every directory entry
-    // count would make the page boundaries depend on whatever else happens to
-    // be on the card.
-    size_t         startOffset = page * pageSize;
-    size_t         matched     = 0;
     struct dirent* ent;
     while ((ent = readdir(dir)) != nullptr) {
         std::string name = ent->d_name;
         if (imageFormatFromName(name) == ImageFormat::UNKNOWN) continue;
 
-        if (matched >= startOffset) {
-            result.push_back(name);
-            if (result.size() >= pageSize) break;
+        if (result.size() >= MAX_LISTED_FILES) {
+            truncated = true;
+            break;
         }
-        matched++;
+        result.push_back(name);
+    }
+    closedir(dir);
+
+    if (truncated) {
+        ESP_LOGW(TAG, "%s holds more than %u loadable files, the rest are not listed", path,
+                 static_cast<unsigned>(MAX_LISTED_FILES));
     }
 
-    closedir(dir);
+    // readdir hands entries back in whatever order the filesystem stored them,
+    // so a file sits wherever it was written rather than where it is looked
+    // for. Sorting also keeps the pages steady from one refresh to the next.
+    std::sort(result.begin(), result.end(), [](const std::string& a, const std::string& b) {
+        return strcasecmp(a.c_str(), b.c_str()) < 0;
+    });
+
+    ESP_LOGI(TAG, "%zu loadable files in %s", result.size(), path);
     return result;
 }
 

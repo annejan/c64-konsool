@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include "C64Emu.hpp"
 #include "MenuBaseClass.hpp"
 #include "menuoverlay/ImageMenu.hpp"
@@ -16,7 +17,13 @@ class UsbLoadMenu : public MenuBaseClass {
     void     openFile(const std::string& filename);
     void     loadPrg(const std::string& filename);
     void     openImage(const std::string& filename);
-    uint16_t currentPage  = 0;
+    // Read once when the menu is opened rather than per page, so the pages
+    // stay consistent while walking through them.
+    std::vector<std::string> entries;
+    void                     refreshEntries();
+    size_t                   pageCount() const;
+
+    uint16_t currentPage = 0;
     uint16_t nextPage     = 0;
     size_t   pageSize     = 12;
     bool     needsRefresh = true;
