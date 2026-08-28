@@ -107,13 +107,30 @@ void ImageMenu::displayMenu()
     for (size_t i = 0; i < imageEntries.size(); i++) {
         const ImageEntry& entry = imageEntries[i];
 
-        char label[40];
-        snprintf(label, sizeof(label), "%-16s %4u", entry.name.c_str(), static_cast<unsigned>(entry.blocks));
-
         MenuItem item = MenuItem();
         item.id       = entry.index;
-        item.title    = label;
-        item.type     = MenuItemType::ACTION;
+        item.petscii  = entry.petscii;
+
+        // With the name drawn from the character ROM the title carries only
+        // the block count, which is not a CBM name and stays in the menu font.
+        // A slot with no name at all has nothing to draw, so that one falls
+        // back to the ASCII rendering.
+        char label[40];
+        if (item.petscii.empty()) {
+            snprintf(label, sizeof(label), "%-16s %4u", entry.name.c_str(), static_cast<unsigned>(entry.blocks));
+        } else {
+            snprintf(label, sizeof(label), "%4u", static_cast<unsigned>(entry.blocks));
+        }
+        item.title = label;
+        if (!entry.loadable) {
+            // Directory art and scratched slots are part of what the disk
+            // draws, so they are listed, but there is nothing to load from
+            // them and they must not be selectable.
+            item.type = MenuItemType::SPACER;
+            items.push_back(item);
+            continue;
+        }
+        item.type  = MenuItemType::ACTION;
         uint16_t idx  = entry.index;
         item.action   = [this, idx](MenuItem* menuItem) {
             (void)menuItem;

@@ -10,6 +10,7 @@
 #include "icons.h"
 #include "menuoverlay/MenuDataStore.hpp"
 #include "menuoverlay/MenuTypes.hpp"
+#include "menuoverlay/PetsciiText.hpp"
 #include "pax_fonts.h"
 #include "pax_gfx.h"
 #include "pax_text.h"
@@ -77,6 +78,13 @@ void MenuController::render()
     // with the selection instead of being broken into pages.
     static const size_t MENU_ROWS = 20;
 
+    // A PETSCII name is drawn at two screen pixels per ROM pixel, so a
+    // character is 16 wide and fits the 20 pixel row. A CBM name is 16
+    // characters, plus one for the splat marker an unclosed file gets.
+    static const int   PETSCII_SCALE   = 2;
+    static const float PETSCII_COL_X   = 30;
+    static const float PETSCII_COL_END = PETSCII_COL_X + 17 * PETSCII_CELL * PETSCII_SCALE + 10;
+
     size_t total = items.size();
     size_t rows  = total < MENU_ROWS ? total : MENU_ROWS;
     size_t first = currentMenu->getFirstVisibleItem();
@@ -106,7 +114,24 @@ void MenuController::render()
 
         if (full_update || idx == currentMenu->getPreviousSelectedIndex() ||
             idx == currentMenu->getCurrentSelectedIndex()) {
-            uint32_t    color = currentMenu->getSelectedItemIndex() == idx ? 0xFFFF0000 : 0xFF002255;
+            uint32_t color    = currentMenu->getSelectedItemIndex() == idx ? 0xFFFF0000 : 0xFF002255;
+            bool     selected = currentMenu->getSelectedItemIndex() == idx;
+            float    rowY     = static_cast<float>(60 + row * 20);
+
+            // A CBM name is PETSCII, and the menu font has no graphics
+            // characters in it, so a directory row is drawn from the C64
+            // character ROM instead. What sits either side of the name, the
+            // selection marker and the block count, is ASCII and stays in the
+            // menu font. Two pixels of leading centre the 16 pixel glyphs in
+            // the 20 pixel row.
+            if (!item.petscii.empty()) {
+                pax_draw_rect(fb, 0xFFFFFFFF, 0, rowY, 800, 20);
+                pax_draw_text(fb, color, pax_font_saira_regular, 18, 14, rowY, selected ? ">" : " ");
+                pax_draw_petscii(fb, color, PETSCII_COL_X, rowY + 2, item.petscii, PETSCII_SCALE);
+                pax_draw_text(fb, color, pax_font_saira_regular, 18, PETSCII_COL_END, rowY, item.title.c_str());
+                continue;
+            }
+
             std::string title;
             switch (item.type) {
                 case MenuItemType::TOGGLE: {

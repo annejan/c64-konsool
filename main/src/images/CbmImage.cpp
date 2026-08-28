@@ -94,12 +94,43 @@ static char petToAscii(uint8_t c)
 }
 
 
-std::string petsciiToDisplay(const uint8_t* petscii, size_t len)
+// Tape records pad with $20, disk directory slots pad with $A0, and a slot
+// that was never written is left at $00. Only the trailing run goes: a $A0 in
+// the middle of a name is a shifted space somebody drew with.
+static size_t petsciiTrim(const uint8_t* petscii, size_t len)
 {
-    // Tape records pad with $20, disk directory slots pad with $A0.
     while (len > 0 && (petscii[len - 1] == 0xA0 || petscii[len - 1] == 0x20 || petscii[len - 1] == 0x00)) {
         len--;
     }
+    return len;
+}
+
+
+// PETSCII repeats its graphics rather than its letters, so the two upper
+// blocks fold back onto $40-$7f. See petToAscii() above for why that matters.
+uint8_t petsciiToScreenCode(uint8_t c)
+{
+    if (c < 0x20) return 0x20;                              // control code, no glyph
+    if (c < 0x40) return c;                                 // space, digits, punctuation
+    if (c < 0x60) return static_cast<uint8_t>(c - 0x40);    // @ A-Z [ ]
+    if (c < 0x80) return static_cast<uint8_t>(c - 0x20);    // the graphics block
+    if (c < 0xA0) return 0x20;                              // control code, no glyph
+    if (c < 0xC0) return static_cast<uint8_t>(c - 0x40);    // shifted space and the blocks
+    if (c < 0xE0) return static_cast<uint8_t>(c - 0x80);    // repeat of $60-$7f
+    return static_cast<uint8_t>(c - 0x80);                  // repeat of $a0-$bf
+}
+
+
+std::string petsciiRaw(const uint8_t* petscii, size_t len)
+{
+    len = petsciiTrim(petscii, len);
+    return std::string(reinterpret_cast<const char*>(petscii), len);
+}
+
+
+std::string petsciiToDisplay(const uint8_t* petscii, size_t len)
+{
+    len = petsciiTrim(petscii, len);
     std::string out;
     out.reserve(len);
     for (size_t i = 0; i < len; i++) {
