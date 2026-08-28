@@ -200,11 +200,18 @@ In VsCodium this can be done using the following statement in the settings.json
 
 ## Credits
 
+The drive emulation follows [Frodo](https://github.com/cebix/frodo4) by
+Christian Bauer, which does the same thing the same way: patch the Kernal's
+serial routines and answer them from a disk image. The Kernal status byte
+values come from its `IEC.h`.
+
 The directory listing layout, the status message format and the CBM DOS error
-texts are ported from [VICE](https://vice-emu.sourceforge.io/), and the handling
-of malformed .t64 containers follows
-[t64fix](https://github.com/Compyx/t64fix). VICE is GPL version 2 or later,
-which is compatible with this project's GPL version 3.
+texts are ported from [VICE](https://vice-emu.sourceforge.io/), and the
+handling of malformed .t64 containers follows
+[t64fix](https://github.com/Compyx/t64fix).
+
+Frodo and VICE are both GPL version 2 or later, which is compatible with this
+project's GPL version 3.
 
 ## Many many credits for the person who wrote the emulator this is based on
 

@@ -358,12 +358,17 @@ static const IecTrapVector kIecTrapVectors[CPUC64::IEC_TRAP_COUNT] = {
     {0xFFAE, "UNLSN"},   // IEC_TRAP_UNLSN
 };
 
-// Kernal status byte. The bits the serial routines report through.
-static const uint16_t KERNAL_STATUS  = 0x90;
-static const uint8_t  STATUS_TIMEOUT_WRITE = 0x01;
-static const uint8_t  STATUS_TIMEOUT_READ  = 0x02;
-static const uint8_t  STATUS_EOI           = 0x40;
-static const uint8_t  STATUS_NOT_PRESENT   = 0x80;
+// Kernal status byte, and the values the serial routines report through it.
+// Taken from Frodo's IEC.h, which is the reference for what these routines
+// hand back: a write with nobody listening reports $03 rather than just the
+// write timeout bit, and a read past the end reports $02 on its own.
+//
+// Frodo (C) 1994-1997, 2002 Christian Bauer, GPL version 2 or later.
+static const uint16_t KERNAL_STATUS       = 0x90;
+static const uint8_t  STATUS_READ_TIMEOUT = 0x02;  // Frodo ST_READ_TIMEOUT
+static const uint8_t  STATUS_TIMEOUT      = 0x03;  // Frodo ST_TIMEOUT
+static const uint8_t  STATUS_EOI          = 0x40;  // Frodo ST_EOF
+static const uint8_t  STATUS_NOT_PRESENT  = 0x80;  // Frodo ST_NOTPRESENT
 
 static const uint8_t OPCODE_JAM = 0x02;
 static const uint8_t OPCODE_JMP = 0x4C;
@@ -436,7 +441,7 @@ bool CPUC64::handleIecTrap(uint16_t addr) {
             if (!iecbus.tksa(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
             break;
         case IEC_TRAP_CIOUT:
-            if (!iecbus.ciout(a)) ram[KERNAL_STATUS] |= STATUS_TIMEOUT_WRITE;
+            if (!iecbus.ciout(a)) ram[KERNAL_STATUS] |= STATUS_TIMEOUT;
             break;
         case IEC_TRAP_ACPTR: {
             uint8_t value = 0;
@@ -445,8 +450,8 @@ bool CPUC64::handleIecTrap(uint16_t addr) {
                 a = value;
                 if (eoi) ram[KERNAL_STATUS] |= STATUS_EOI;
             } else {
-                a                        = 0;
-                ram[KERNAL_STATUS]      |= STATUS_TIMEOUT_READ | STATUS_EOI;
+                a                   = 0;
+                ram[KERNAL_STATUS] |= STATUS_READ_TIMEOUT;
             }
             // ACPTR leaves the byte in the accumulator, so mirror what a load
             // would have done to the flags.
