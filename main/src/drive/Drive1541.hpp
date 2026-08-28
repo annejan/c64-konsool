@@ -107,9 +107,6 @@ class Drive1541 : public CPU6502 {
     // the acknowledge gate depends on it without the drive CPU running.
     void refreshIecOutputs();
 
-    // True while the drive has nothing to do, so it can be skipped.
-    bool idle = true;
-
     // CPU6502 hooks.
     void    run() override;
     uint8_t getMem(uint16_t addr) override;

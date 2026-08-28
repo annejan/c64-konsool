@@ -3,10 +3,10 @@
 
      make -C main/src/drive/test drive
 
- The drive CPU itself needs a DOS ROM, which is not shipped, so what is
- checked here is everything around it: the VIA registers and timers, the
- wired-and behaviour of the serial lines, the attention acknowledge gate, and
- the head stepping.
+ Covers the VIA registers and timers, the wired-and behaviour of the serial
+ lines, the attention acknowledge gate and the head stepping, and boots the
+ drive CPU itself against a small hand assembled ROM so the real DOS ROM,
+ which cannot be shipped, is not needed.
 */
 
 #include <cstdio>
@@ -36,6 +36,7 @@ class MemDisk : public DiskImage {
    public:
     std::vector<uint8_t> bytes;
     unsigned int         trackCount = 35;
+    bool                 readOnly   = true;
 
     MemDisk()
     {
@@ -68,9 +69,16 @@ class MemDisk : public DiskImage {
         memcpy(buf, &bytes[offset(track, sector)], CBM_SECTOR_SIZE);
         return true;
     }
+    bool writeSector(unsigned int track, unsigned int sector, const uint8_t* buf) override
+    {
+        if (readOnly) return false;
+        if (track < 1 || track > trackCount || sector >= sectorsPerTrack(track)) return false;
+        memcpy(&bytes[offset(track, sector)], buf, CBM_SECTOR_SIZE);
+        return true;
+    }
     bool writable() const override
     {
-        return false;
+        return !readOnly;
     }
     unsigned int tracks() const override
     {
@@ -131,6 +139,36 @@ static void testViaTimer1()
     via.read(Via6522::REG_T1CL, 0, 0);
     via.countTimers(20);
     CHECK((via.ifr & Via6522::IRQ_T1) != 0, "free running timer did not flag again");
+}
+
+static void testViaTimer1OneShotFiresOnce()
+{
+    printf("VIA: a one shot timer 1 flags once, not every time it wraps\n");
+    Via6522 via;
+    via.reset();
+
+    via.write(Via6522::REG_ACR, 0x00);  // one shot
+    via.write(Via6522::REG_T1CL, 10);
+    via.write(Via6522::REG_T1CH, 0);
+
+    via.countTimers(20);
+    CHECK((via.ifr & Via6522::IRQ_T1) != 0, "the timer did not flag when it ran out");
+
+    via.read(Via6522::REG_T1CL, 0, 0);  // acknowledge
+    CHECK((via.ifr & Via6522::IRQ_T1) == 0, "the flag did not clear");
+
+    // The counter keeps running and wraps all the way round. On real hardware
+    // that does not raise the flag again until the timer is reloaded, and an
+    // extra interrupt here would look like a phantom one to the drive.
+    for (int i = 0; i < 300; i++) {
+        via.countTimers(255);
+    }
+    CHECK((via.ifr & Via6522::IRQ_T1) == 0, "the one shot timer flagged again after wrapping");
+
+    // Reloading arms it once more.
+    via.write(Via6522::REG_T1CH, 0);
+    via.countTimers(20);
+    CHECK((via.ifr & Via6522::IRQ_T1) != 0, "reloading did not re-arm the timer");
 }
 
 static void testViaInterruptGating()
@@ -329,6 +367,171 @@ static void testControllerReadsTrack()
     CHECK(!empty.syncFound(), "an empty drive found a sync mark");
 }
 
+static void testResetKeepsTheDisk()
+{
+    printf("Controller: a reset parks the head without losing the disk\n");
+    MemDisk        disk;
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    // Move away from where a reset should leave the head.
+    for (int i = 0; i < 6; i++) controller.moveHeadIn();
+    CHECK(controller.currentTrack() != 18, "the head did not move");
+
+    controller.reset();
+    CHECK(controller.currentTrack() == 18, "a reset did not park the head on track 18");
+
+    // The disk is still in the drive, so there must be a track under the head
+    // rather than gap. Getting this wrong looks exactly like an unformatted
+    // disk and would leave the drive hunting forever.
+    CHECK(controller.syncFound(), "no sync under the head after a reset");
+    uint8_t first = controller.readGcrByte();
+    CHECK(first == 0xff, "the head read $%02x after a reset, expected a sync byte", first);
+}
+
+static void testWriteProtectSense()
+{
+    printf("Controller: write protect reflects whether the image can be written\n");
+    MemDisk        disk;
+    DiskController controller;
+
+    disk.readOnly = true;
+    controller.setDisk(&disk);
+    CHECK(controller.writeProtectBit() == 0x00, "a read only image did not report protected");
+
+    disk.readOnly = false;
+    controller.setDisk(&disk);
+    CHECK(controller.writeProtectBit() == 0x10, "a writable image reported protected");
+
+    DiskController empty;
+    CHECK(empty.writeProtectBit() == 0x00, "an empty drive did not report protected");
+}
+
+static void testHeadWritesReachTheImage()
+{
+    printf("Controller: bytes written by the head land in the image\n");
+    MemDisk disk;
+    disk.readOnly = false;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    // Build the sector the drive would lay down: same header, new data.
+    uint8_t replacement[CBM_SECTOR_SIZE];
+    for (unsigned int i = 0; i < CBM_SECTOR_SIZE; i++) {
+        replacement[i] = static_cast<uint8_t>(0xa0 + (i & 0x0f));
+    }
+    uint8_t encoded[GCR_SECTOR_SIZE];
+    gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
+
+    // The head starts at the beginning of the track, so writing the encoded
+    // sector straight through lands it on sector 0.
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(encoded[i]);
+    }
+
+    // Nothing reaches the image until the head is done with the track.
+    uint8_t before[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, before);
+    CHECK(memcmp(before, replacement, CBM_SECTOR_SIZE) != 0, "the image changed before any flush");
+
+    controller.flush();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    CHECK(disk.readSector(18, 0, after), "could not read the sector back");
+    CHECK(memcmp(after, replacement, CBM_SECTOR_SIZE) == 0, "the written sector did not reach the image");
+
+    // Other sectors on the track are left alone.
+    uint8_t neighbour[CBM_SECTOR_SIZE];
+    disk.readSector(18, 1, neighbour);
+    bool untouched = false;
+    for (unsigned int i = 0; i < CBM_SECTOR_SIZE; i++) {
+        if (neighbour[i] != replacement[i]) {
+            untouched = true;
+            break;
+        }
+    }
+    CHECK(untouched, "writing one sector changed its neighbour");
+}
+
+static void testHeadWriteStepsFlush()
+{
+    printf("Controller: stepping away writes the track back on the way out\n");
+    MemDisk disk;
+    disk.readOnly = false;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    uint8_t replacement[CBM_SECTOR_SIZE];
+    memset(replacement, 0x5c, sizeof(replacement));
+    uint8_t encoded[GCR_SECTOR_SIZE];
+    gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(encoded[i]);
+    }
+
+    // Two half steps take the head to the next track, and the changes have to
+    // go with it rather than being dropped.
+    controller.moveHeadIn();
+    controller.moveHeadIn();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, after);
+    CHECK(memcmp(after, replacement, CBM_SECTOR_SIZE) == 0, "stepping away lost the written data");
+}
+
+static void testWriteRefusedOnReadOnlyImage()
+{
+    printf("Controller: a read only image is never written to\n");
+    MemDisk disk;
+    disk.readOnly = true;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    uint8_t original[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, original);
+
+    uint8_t replacement[CBM_SECTOR_SIZE];
+    memset(replacement, 0x77, sizeof(replacement));
+    uint8_t encoded[GCR_SECTOR_SIZE];
+    gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(encoded[i]);
+    }
+    controller.flush();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, after);
+    CHECK(memcmp(after, original, CBM_SECTOR_SIZE) == 0, "a read only image was written to");
+}
+
+static void testGarbledTrackIsNotWrittenBack()
+{
+    printf("Controller: a garbled track does not scribble over the image\n");
+    MemDisk disk;
+    disk.readOnly = false;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    uint8_t original[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, original);
+
+    // Write noise over the start of the track, wrecking the header and the
+    // data block. Nothing recognisable is there, so nothing should be written
+    // back rather than a wrong guess landing on a real sector.
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(static_cast<uint8_t>(0x33));
+    }
+    controller.flush();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, after);
+    CHECK(memcmp(after, original, CBM_SECTOR_SIZE) == 0, "a garbled track overwrote a real sector");
+}
+
 static void testSpeedZones()
 {
     printf("Controller: speed zone follows the track number\n");
@@ -380,18 +583,286 @@ static void testDriveMemoryMap()
     CHECK(drive.getMem(0xc000) == 0, "unmapped ROM space returned something");
 }
 
+/* ------------------------------------------------- running the drive CPU -- */
+
+// The real DOS ROM is copyrighted and not shipped, so the drive CPU could not
+// be run at all in the tests. It does not need the real one: a handful of
+// hand assembled instructions in a ROM image is enough to drive the whole
+// stack, the reset vector, the memory map, both VIAs, the bus lines and the
+// head.
+//
+// The program below waits for ATN, acknowledges it, reads four bytes off the
+// head into zero page, then parks itself:
+//
+//      C000  78         sei
+//      C001  a2 ff      ldx #$ff
+//      C003  9a         txs
+//      C004  a9 1a      lda #$1a       ; DATA, CLK and ATNA are outputs
+//      C006  8d 02 18   sta $1802      ; VIA 1 DDRB
+//      C009  a9 00      lda #$00
+//      C00b  8d 00 18   sta $1800      ; release everything
+//      C00e  ad 00 18   lda $1800      ; wait_atn: read port B
+//      C011  29 80      and #$80       ; ATN reads as a one when low
+//      C013  f0 f9      beq wait_atn
+//      C015  a9 10      lda #$10       ; acknowledge by raising ATNA
+//      C017  8d 00 18   sta $1800
+//      C01a  a2 00      ldx #$00
+//      C01c  ad 01 1c   lda $1c01      ; read_loop: VIA 2 port A is the head
+//      C01f  9d 00 00   sta $0000,x
+//      C022  e8         inx
+//      C023  e0 04      cpx #$04
+//      C025  d0 f5      bne read_loop
+//      C027  a9 42      lda #$42       ; leave a marker so the test can tell
+//      C029  8d 10 00   sta $0010
+//      C02c  4c 2c c0   done: jmp done
+static void buildTestRom(uint8_t* rom)
+{
+    memset(rom, 0xff, Drive1541::ROM_SIZE);
+
+    static const uint8_t program[] = {
+        0x78,              // sei
+        0xa2, 0xff,        // ldx #$ff
+        0x9a,              // txs
+        0xa9, 0x1a,        // lda #$1a
+        0x8d, 0x02, 0x18,  // sta $1802
+        0xa9, 0x00,        // lda #$00
+        0x8d, 0x00, 0x18,  // sta $1800
+        0xad, 0x00, 0x18,  // lda $1800
+        0x29, 0x80,        // and #$80
+        0xf0, 0xf9,        // beq -7
+        0xa9, 0x10,        // lda #$10
+        0x8d, 0x00, 0x18,  // sta $1800
+        0xa2, 0x00,        // ldx #$00
+        0xad, 0x01, 0x1c,  // lda $1c01
+        0x9d, 0x00, 0x00,  // sta $0000,x
+        0xe8,              // inx
+        0xe0, 0x04,        // cpx #$04
+        0xd0, 0xf5,        // bne -11
+        0xa9, 0x42,        // lda #$42
+        0x8d, 0x10, 0x00,  // sta $0010
+        0x4c, 0x2c, 0xc0,  // jmp $c02c
+    };
+    memcpy(rom, program, sizeof(program));
+
+    // Reset vector at $fffc, which is the top of the ROM.
+    rom[Drive1541::ROM_SIZE - 4] = 0x00;
+    rom[Drive1541::ROM_SIZE - 3] = 0xc0;
+}
+
+static void testDriveCpuRuns()
+{
+    printf("Drive: the CPU boots, answers ATN and reads the head\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildTestRom(rom);
+
+    MemDisk   disk;
+    IecLines  lines;
+    Drive1541 drive;
+
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.setDisk(&disk);
+    CHECK(drive.ready(), "the drive did not accept the ROM");
+
+    drive.reset();
+
+    // It should be spinning on the ATN check, not off in the weeds.
+    drive.emulateCycles(200);
+    CHECK(drive.getMem(0x0010) != 0x42, "the program finished before ATN was ever asserted");
+
+    // Once the drive has set its direction register, releasing everything
+    // leaves the bus alone.
+    CHECK(!lines.dataLow(), "the drive held DATA low while idle");
+    CHECK(!lines.clkLow(), "the drive held CLK low while idle");
+
+    // The C64 asserts ATN. The acknowledge gate should pull DATA low straight
+    // away, before the drive has even noticed.
+    lines.c64Atn = true;
+    drive.refreshIecOutputs();
+    CHECK(lines.dataLow(), "DATA was not pulled low when ATN went active");
+
+    // Now let it run: it should see ATN, acknowledge, and read the head.
+    for (int i = 0; i < 100 && drive.getMem(0x0010) != 0x42; i++) {
+        drive.emulateCycles(100);
+    }
+    CHECK(drive.getMem(0x0010) == 0x42, "the drive program never reached its marker");
+
+    // Acknowledging released DATA again, which is how a drive reports itself
+    // present and ready.
+    CHECK(!lines.dataLow(), "DATA stayed low after the drive acknowledged");
+
+    // The four bytes it read are the start of track 18, which begins with the
+    // sync mark the encoder wrote.
+    for (int i = 0; i < 4; i++) {
+        uint8_t got = drive.getMem(static_cast<uint16_t>(i));
+        CHECK(got == 0xff, "byte %d off the head was $%02x, expected a sync byte", i, got);
+    }
+}
+
+// A second test ROM, this one putting the head into write mode and laying two
+// bytes down:
+//
+//      C000  78         sei
+//      C001  a2 ff      ldx #$ff
+//      C003  9a         txs
+//      C004  a9 ff      lda #$ff
+//      C006  8d 03 1c   sta $1c03      ; VIA 2 DDRA, port A drives, so writing
+//      C009  a9 ab      lda #$ab
+//      C00b  8d 01 1c   sta $1c01      ; onto the track
+//      C00e  a9 cd      lda #$cd
+//      C010  8d 01 1c   sta $1c01
+//      C013  a9 42      lda #$42
+//      C015  8d 10 00   sta $0010      ; marker
+//      C018  4c 18 c0   done: jmp done
+static void buildWriteRom(uint8_t* rom)
+{
+    memset(rom, 0xff, Drive1541::ROM_SIZE);
+
+    static const uint8_t program[] = {
+        0x78,              // sei
+        0xa2, 0xff,        // ldx #$ff
+        0x9a,              // txs
+        0xa9, 0xff,        // lda #$ff
+        0x8d, 0x03, 0x1c,  // sta $1c03
+        0xa9, 0xab,        // lda #$ab
+        0x8d, 0x01, 0x1c,  // sta $1c01
+        0xa9, 0xcd,        // lda #$cd
+        0x8d, 0x01, 0x1c,  // sta $1c01
+        0xa9, 0x42,        // lda #$42
+        0x8d, 0x10, 0x00,  // sta $0010
+        0x4c, 0x18, 0xc0,  // jmp $c018
+    };
+    memcpy(rom, program, sizeof(program));
+    rom[Drive1541::ROM_SIZE - 4] = 0x00;
+    rom[Drive1541::ROM_SIZE - 3] = 0xc0;
+}
+
+static void testDriveCpuWritesTheHead()
+{
+    printf("Drive: the CPU can put the head into write mode and lay bytes down\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildWriteRom(rom);
+
+    MemDisk disk;
+    disk.readOnly = false;
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.setDisk(&disk);
+    drive.reset();
+
+    for (int i = 0; i < 50 && drive.getMem(0x0010) != 0x42; i++) {
+        drive.emulateCycles(50);
+    }
+    CHECK(drive.getMem(0x0010) == 0x42, "the write program never finished");
+
+    // The head is now two bytes along. Reading the rest of the way round
+    // brings it back to where the writes landed.
+    DiskController& controller = drive.disk();
+    for (unsigned int i = 0; i < GCR_TRACK_SIZE - 2; i++) {
+        controller.readGcrByte();
+    }
+    uint8_t first  = controller.readGcrByte();
+    uint8_t second = controller.readGcrByte();
+    CHECK(first == 0xab, "the first byte written was read back as $%02x", first);
+    CHECK(second == 0xcd, "the second byte written was read back as $%02x", second);
+}
+
+static void testDriveCpuCycleAccounting()
+{
+    printf("Drive: instructions report the cycles they spent\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildTestRom(rom);
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.reset();
+
+    // Every instruction has to claim at least one cycle, or the interleaving
+    // against the C64 would spin without making progress.
+    for (int i = 0; i < 20; i++) {
+        unsigned int used = drive.stepInstruction();
+        CHECK(used >= 1, "an instruction claimed %u cycles", used);
+        CHECK(used <= 8, "an instruction claimed %u cycles, which is too many", used);
+    }
+
+    // Asking for a budget consumes roughly that much, give or take the
+    // instruction it was in the middle of.
+    unsigned int spent = drive.emulateCycles(100);
+    CHECK(spent >= 100 && spent < 110, "a budget of 100 cycles spent %u", spent);
+}
+
+static void testLargeCycleBudget()
+{
+    printf("Drive: a cycle budget larger than a byte does not wrap\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildTestRom(rom);
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.reset();
+
+    // The CPU's own cycle counter is a byte. Counting a budget in it would
+    // wrap and spin forever the moment a caller asked for more than 255.
+    unsigned int spent = drive.emulateCycles(5000);
+    CHECK(spent >= 5000 && spent < 5010, "a budget of 5000 cycles spent %u", spent);
+}
+
+static void testDriveWithoutRom()
+{
+    printf("Drive: with no ROM it stays inert rather than running wild\n");
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.reset();
+
+    CHECK(!drive.ready(), "a drive with no ROM claimed to be ready");
+    // Asking it to run must not execute anything or touch the bus.
+    unsigned int spent = drive.emulateCycles(50);
+    CHECK(spent == 50, "a drive with no ROM did not just consume the budget");
+    CHECK(!lines.dataLow() && !lines.clkLow(), "a drive with no ROM drove the bus");
+}
+
 int main()
 {
     testViaPorts();
     testViaTimer1();
+    testViaTimer1OneShotFiresOnce();
     testViaInterruptGating();
     testLinesAreWiredAnd();
     testAtnAcknowledgeGate();
     testDriveReadsBusState();
     testHeadStepping();
     testControllerReadsTrack();
+    testResetKeepsTheDisk();
+    testWriteProtectSense();
+    testHeadWritesReachTheImage();
+    testHeadWriteStepsFlush();
+    testWriteRefusedOnReadOnlyImage();
+    testGarbledTrackIsNotWrittenBack();
     testSpeedZones();
     testDriveMemoryMap();
+    testDriveCpuRuns();
+    testDriveCpuWritesTheHead();
+    testDriveCpuCycleAccounting();
+    testLargeCycleBudget();
+    testDriveWithoutRom();
 
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

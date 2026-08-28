@@ -521,7 +521,6 @@ void CPUC64::disableTrueDrive() {
 
 void CPUC64::onAtnChanged() {
     if (!trueDriveEnabled) return;
-    drive.idle = false;
     // The acknowledge gate depends on ATN, so the drive's outputs change the
     // moment ATN does, without the drive CPU running.
     drive.refreshIecOutputs();
@@ -536,7 +535,7 @@ void CPUC64::onAtnChanged() {
 // behind runs next. That is close enough for loaders that hand bytes back and
 // forth over the bus, and far cheaper than stepping both cycle by cycle.
 void CPUC64::executeUntilCycle(uint8_t untilCycles) {
-    bool withDrive = trueDriveEnabled && drive.ready() && !drive.idle;
+    bool withDrive = trueDriveEnabled && drive.ready();
 
     while (numofcycles < untilCycles) {
         if (cpuhalted) {
