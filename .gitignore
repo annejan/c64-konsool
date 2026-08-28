@@ -159,6 +159,7 @@ main/src/drive/test/dos_test
 main/src/drive/test/gcr_test
 main/src/drive/test/drive_test
 main/src/test/cpu_test
+main/src/test/cycle_test
 
 # The 1541 DOS ROM is copyrighted and must not be committed. tools/get-drive-rom.sh
 # drops a copy here when it is run without a destination.
