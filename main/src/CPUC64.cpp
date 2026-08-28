@@ -339,7 +339,140 @@ uint8_t *CPUC64::getSidRegs() {
     return sidreg;
 }
 
+// Kernal jump table entries for the serial routines. Each holds a JMP to the
+// real routine, so the address to trap is read from the ROM rather than being
+// hardcoded to a particular Kernal revision.
+struct IecTrapVector {
+    uint16_t    jumpTableAddr;
+    const char* name;
+};
+
+static const IecTrapVector kIecTrapVectors[CPUC64::IEC_TRAP_COUNT] = {
+    {0xFFB1, "LISTEN"},  // IEC_TRAP_LISTEN
+    {0xFFB4, "TALK"},    // IEC_TRAP_TALK
+    {0xFF93, "SECOND"},  // IEC_TRAP_SECOND
+    {0xFF96, "TKSA"},    // IEC_TRAP_TKSA
+    {0xFFA8, "CIOUT"},   // IEC_TRAP_CIOUT
+    {0xFFA5, "ACPTR"},   // IEC_TRAP_ACPTR
+    {0xFFAB, "UNTLK"},   // IEC_TRAP_UNTLK
+    {0xFFAE, "UNLSN"},   // IEC_TRAP_UNLSN
+};
+
+// Kernal status byte. The bits the serial routines report through.
+static const uint16_t KERNAL_STATUS  = 0x90;
+static const uint8_t  STATUS_TIMEOUT_WRITE = 0x01;
+static const uint8_t  STATUS_TIMEOUT_READ  = 0x02;
+static const uint8_t  STATUS_EOI           = 0x40;
+static const uint8_t  STATUS_NOT_PRESENT   = 0x80;
+
+static const uint8_t OPCODE_JAM = 0x02;
+static const uint8_t OPCODE_JMP = 0x4C;
+static const uint8_t OPCODE_RTS = 0x60;
+
+bool CPUC64::installIecTraps() {
+    if (iecTrapsActive) return true;
+
+    // Resolve every routine first, so a Kernal that does not look the way we
+    // expect leaves the ROM untouched rather than half patched.
+    uint16_t resolved[IEC_TRAP_COUNT];
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        uint16_t entry = kIecTrapVectors[i].jumpTableAddr;
+        uint16_t off   = entry - 0xE000;
+        if (kernal_rom[off] != OPCODE_JMP) {
+            ESP_LOGE(TAG, "kernal jump table entry for %s is not a JMP", kIecTrapVectors[i].name);
+            return false;
+        }
+        resolved[i] = static_cast<uint16_t>(kernal_rom[off + 1] | (kernal_rom[off + 2] << 8));
+        if (resolved[i] < 0xE000) {
+            ESP_LOGE(TAG, "%s points outside the kernal at $%04x", kIecTrapVectors[i].name, resolved[i]);
+            return false;
+        }
+    }
+
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        iecTrapAddr[i]      = resolved[i];
+        uint16_t off        = resolved[i] - 0xE000;
+        iecTrapSavedByte[i] = kernal_rom[off];
+        kernal_rom[off]     = OPCODE_JAM;
+        ESP_LOGI(TAG, "trapped %s at $%04x", kIecTrapVectors[i].name, resolved[i]);
+    }
+    iecTrapsActive = true;
+    return true;
+}
+
+void CPUC64::removeIecTraps() {
+    if (!iecTrapsActive) return;
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        kernal_rom[iecTrapAddr[i] - 0xE000] = iecTrapSavedByte[i];
+    }
+    iecTrapsActive = false;
+}
+
+// Services one trapped Kernal call. Returns false when the address is not one
+// of ours, which means a real JAM.
+bool CPUC64::handleIecTrap(uint16_t addr) {
+    if (!iecTrapsActive) return false;
+
+    int which = -1;
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        if (iecTrapAddr[i] == addr) {
+            which = i;
+            break;
+        }
+    }
+    if (which < 0) return false;
+
+    switch (which) {
+        case IEC_TRAP_LISTEN:
+            if (!iecbus.listen(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_TALK:
+            if (!iecbus.talk(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_SECOND:
+            if (!iecbus.second(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_TKSA:
+            if (!iecbus.tksa(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_CIOUT:
+            if (!iecbus.ciout(a)) ram[KERNAL_STATUS] |= STATUS_TIMEOUT_WRITE;
+            break;
+        case IEC_TRAP_ACPTR: {
+            uint8_t value = 0;
+            bool    eoi   = false;
+            if (iecbus.acptr(&value, &eoi)) {
+                a = value;
+                if (eoi) ram[KERNAL_STATUS] |= STATUS_EOI;
+            } else {
+                a                        = 0;
+                ram[KERNAL_STATUS]      |= STATUS_TIMEOUT_READ | STATUS_EOI;
+            }
+            // ACPTR leaves the byte in the accumulator, so mirror what a load
+            // would have done to the flags.
+            zflag = (a == 0);
+            nflag = (a & 0x80) != 0;
+            break;
+        }
+        case IEC_TRAP_UNTLK:
+            iecbus.untalk();
+            break;
+        case IEC_TRAP_UNLSN:
+            iecbus.unlisten();
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
 void CPUC64::cmd6502halt() {
+    // The JAM opcode has already been fetched, so the trapped routine starts
+    // one byte back.
+    if (handleIecTrap(pc - 1)) {
+        execute(OPCODE_RTS);
+        return;
+    }
     cpuhalted = true;
     ESP_LOGE(TAG, "illegal code, cpu halted, pc = %x", pc - 1);
 }

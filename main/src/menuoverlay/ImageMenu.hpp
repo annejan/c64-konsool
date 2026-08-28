@@ -20,6 +20,8 @@ class ImageMenu : public MenuBaseClass {
 
     void displayMenu();
     void loadEntry(uint16_t index);
+    void mountDisk();
+    bool isDisk = false;
     void toPrevPage();
     void toNextPage();
 
