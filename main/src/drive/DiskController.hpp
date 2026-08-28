@@ -79,6 +79,19 @@ class DiskController {
     // the disk is taken out, and on reset.
     void flush();
 
+    // Where the head is sitting in the encoded track, for tests and probes.
+    unsigned int headPosition() const
+    {
+        return headPos;
+    }
+
+    // Moves the head on by one byte without reading it. The disk keeps turning
+    // whether or not the drive is taking bytes off it, and the DOS leans on
+    // that: it hunts for a sync mark by watching the sync line alone, without
+    // touching port A, so a head that only moves when it is read never
+    // arrives at one.
+    void rotate();
+
     // True when the head is sitting on a sync mark.
     bool syncFound() const;
 

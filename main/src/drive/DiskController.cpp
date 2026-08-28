@@ -10,7 +10,7 @@ void DiskController::reset()
 {
     flushTrack();
     halfTrack = 2 * 18;
-    headPos   = 0;
+    headPos   = 0;  // a reset does park the head
     // Reload rather than just clearing: a reset parks the head on the
     // directory track, it does not take the disk out. Clearing without
     // reloading leaves the head reading gap forever, which looks exactly like
@@ -44,7 +44,14 @@ void DiskController::loadTrack()
     trackLoaded = false;
     trackDirty  = false;
     memset(gcrTrack, GCR_GAP_BYTE, sizeof(gcrTrack));
-    headPos = 0;
+
+    // headPos is deliberately left alone. The disk keeps turning while the
+    // head steps, so the head comes down wherever the rotation has got to,
+    // not at the start of a sector. Zeroing it here restarts the revolution
+    // on every half step, and a 1541 half steps constantly while it settles
+    // on a track, so the DOS never got to see the sectors near the end of a
+    // track at all. Every track is encoded into the same sized buffer, so the
+    // position stays in range.
 
     if (disk == nullptr) return;
     unsigned int track = currentTrack();
@@ -129,6 +136,13 @@ uint8_t DiskController::readGcrByte()
     headPos++;
     if (headPos >= GCR_TRACK_SIZE) headPos = 0;
     return value;
+}
+
+void DiskController::rotate()
+{
+    if (!trackLoaded) return;
+    headPos++;
+    if (headPos >= GCR_TRACK_SIZE) headPos = 0;
 }
 
 bool DiskController::syncFound() const
