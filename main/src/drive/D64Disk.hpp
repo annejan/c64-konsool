@@ -28,6 +28,7 @@ class D64Disk : public DiskImage {
    private:
     int          fd         = -1;
     unsigned int trackCount = 35;
+    bool         readOnly   = true;
 
    public:
     D64Disk()
@@ -35,6 +36,8 @@ class D64Disk : public DiskImage {
     }
     ~D64Disk() override;
 
+    // Opens for reading and writing when the card allows it, falling back to
+    // read only. writable() says which happened.
     bool open(const char* path);
     void close();
     bool isOpen() const
@@ -43,6 +46,7 @@ class D64Disk : public DiskImage {
     }
 
     bool readSector(unsigned int track, unsigned int sector, uint8_t* buf) override;
+    bool writeSector(unsigned int track, unsigned int sector, const uint8_t* buf) override;
 
     bool writable() const override
     {

@@ -49,8 +49,10 @@ static const char* typeName(uint8_t type)
 
 void CbmDos::setDisk(DiskImage* image, const std::string& name)
 {
-    disk     = image;
-    diskName = name;
+    disk      = image;
+    diskName  = name;
+    bamLoaded = false;
+    bamDirty  = false;
     reset();
 }
 
@@ -158,6 +160,194 @@ bool CbmDos::nameMatches(const uint8_t* entryName, const std::string& pattern)
     return entryEnded && patternEnded;
 }
 
+// BAM layout on a 1541: four bytes per track from $04, the first being the
+// number of free sectors on that track and the next three a bitmap with a set
+// bit meaning free.
+static const int BAM_TRACK_ENTRY = 0x04;
+
+bool CbmDos::bamLoad()
+{
+    if (bamLoaded) return true;
+    if (disk == nullptr) return false;
+    if (!disk->readSector(disk->dirTrack(), 0, bam)) return false;
+    bamLoaded = true;
+    bamDirty  = false;
+    return true;
+}
+
+bool CbmDos::bamFlush()
+{
+    if (!bamLoaded || !bamDirty) return true;
+    if (disk == nullptr || !disk->writable()) return false;
+    if (!disk->writeSector(disk->dirTrack(), 0, bam)) return false;
+    bamDirty = false;
+    return true;
+}
+
+bool CbmDos::bamIsFree(unsigned int track, unsigned int sector) const
+{
+    if (!bamLoaded || track < 1 || track > 35) return false;
+    const uint8_t* entry = bam + BAM_TRACK_ENTRY + (track - 1) * 4;
+    return (entry[1 + (sector >> 3)] & (1 << (sector & 7))) != 0;
+}
+
+void CbmDos::bamSet(unsigned int track, unsigned int sector, bool free)
+{
+    if (!bamLoaded || track < 1 || track > 35) return;
+    uint8_t* entry = bam + BAM_TRACK_ENTRY + (track - 1) * 4;
+    uint8_t  mask  = static_cast<uint8_t>(1 << (sector & 7));
+    uint8_t& byte  = entry[1 + (sector >> 3)];
+
+    bool wasFree = (byte & mask) != 0;
+    if (free == wasFree) return;  // already in the wanted state
+
+    if (free) {
+        byte = static_cast<uint8_t>(byte | mask);
+        if (entry[0] < 255) entry[0]++;
+    } else {
+        byte = static_cast<uint8_t>(byte & ~mask);
+        if (entry[0] > 0) entry[0]--;
+    }
+    bamDirty = true;
+}
+
+bool CbmDos::bamAllocate(unsigned int nearTrack, uint8_t* track, uint8_t* sector)
+{
+    if (!bamLoad() || disk == nullptr) return false;
+
+    unsigned int maxTrack = disk->tracks() < 35 ? disk->tracks() : 35;
+    if (nearTrack < 1 || nearTrack > maxTrack) nearTrack = 17;
+
+    // Work outwards from the starting track, skipping the directory, which is
+    // roughly what a real drive does to keep a file's blocks together.
+    for (unsigned int distance = 0; distance <= maxTrack; distance++) {
+        for (int direction = 0; direction < 2; direction++) {
+            long candidate = static_cast<long>(nearTrack) +
+                             (direction == 0 ? static_cast<long>(distance) : -static_cast<long>(distance));
+            if (candidate < 1 || candidate > static_cast<long>(maxTrack)) continue;
+            unsigned int t = static_cast<unsigned int>(candidate);
+            if (t == disk->dirTrack()) continue;
+
+            unsigned int perTrack = disk->sectorsPerTrack(t);
+            for (unsigned int sec = 0; sec < perTrack; sec++) {
+                if (bamIsFree(t, sec)) {
+                    bamSet(t, sec, false);
+                    *track  = static_cast<uint8_t>(t);
+                    *sector = static_cast<uint8_t>(sec);
+                    return true;
+                }
+            }
+            if (distance == 0) break;  // both directions are the same track
+        }
+    }
+    return false;
+}
+
+void CbmDos::bamFreeChain(unsigned int track, unsigned int sector)
+{
+    if (!bamLoad() || disk == nullptr) return;
+
+    unsigned int guard = 0;
+    uint8_t      buf[CBM_SECTOR_SIZE];
+    while (track != 0 && guard < 4096) {
+        if (!disk->readSector(track, sector, buf)) break;
+        bamSet(track, sector, true);
+        guard++;
+        unsigned int nextTrack  = buf[0];
+        unsigned int nextSector = buf[1];
+        if (nextTrack == 0) break;
+        track  = nextTrack;
+        sector = nextSector;
+    }
+}
+
+unsigned int CbmDos::bamFreeBlocks() const
+{
+    if (!bamLoaded || disk == nullptr) return 0;
+    unsigned int free     = 0;
+    unsigned int maxTrack = disk->tracks() < 35 ? disk->tracks() : 35;
+    for (unsigned int t = 1; t <= maxTrack; t++) {
+        if (t == disk->dirTrack()) continue;
+        free += bam[BAM_TRACK_ENTRY + (t - 1) * 4];
+    }
+    return free;
+}
+
+// Walks the directory looking for an entry matching `pattern`, handing back
+// where it lives so it can be written to.
+bool CbmDos::findSlot(const std::string& pattern, uint8_t typeWanted, uint8_t* dirTrack, uint8_t* dirSector,
+                      uint8_t* dirSlot, uint8_t* buf)
+{
+    if (disk == nullptr) return false;
+
+    unsigned int t       = disk->dirTrack();
+    unsigned int sct     = disk->dirSector();
+    unsigned int visited = 0;
+
+    while (visited < 64) {
+        if (!disk->readSector(t, sct, buf)) return false;
+        visited++;
+
+        for (unsigned int slot = 0; slot < 8; slot++) {
+            const uint8_t* e    = buf + slot * DIR_ENTRY_SIZE;
+            uint8_t        type = e[SLOT_TYPE];
+            if (type == 0) continue;
+            if (typeWanted != 0xFF && (type & FT_MASK) != typeWanted) continue;
+            if (!nameMatches(e + SLOT_NAME, pattern)) continue;
+
+            *dirTrack  = static_cast<uint8_t>(t);
+            *dirSector = static_cast<uint8_t>(sct);
+            *dirSlot   = static_cast<uint8_t>(slot);
+            return true;
+        }
+
+        if (buf[0] == 0) break;
+        t   = buf[0];
+        sct = buf[1];
+    }
+    return false;
+}
+
+bool CbmDos::findFreeSlot(uint8_t* dirTrack, uint8_t* dirSector, uint8_t* dirSlot, uint8_t* buf)
+{
+    if (disk == nullptr) return false;
+
+    unsigned int t       = disk->dirTrack();
+    unsigned int sct     = disk->dirSector();
+    unsigned int visited = 0;
+
+    while (visited < 64) {
+        if (!disk->readSector(t, sct, buf)) return false;
+        visited++;
+
+        for (unsigned int slot = 0; slot < 8; slot++) {
+            if (buf[slot * DIR_ENTRY_SIZE + SLOT_TYPE] == 0) {
+                *dirTrack  = static_cast<uint8_t>(t);
+                *dirSector = static_cast<uint8_t>(sct);
+                *dirSlot   = static_cast<uint8_t>(slot);
+                return true;
+            }
+        }
+
+        if (buf[0] == 0)
+            break;  // no room, and growing the directory is not
+                    // supported yet
+        t   = buf[0];
+        sct = buf[1];
+    }
+    return false;
+}
+
+bool CbmDos::updateSlot(uint8_t dirTrack, uint8_t dirSector, uint8_t dirSlot, const uint8_t* entry)
+{
+    if (disk == nullptr || !disk->writable()) return false;
+
+    uint8_t buf[CBM_SECTOR_SIZE];
+    if (!disk->readSector(dirTrack, dirSector, buf)) return false;
+    memcpy(buf + dirSlot * DIR_ENTRY_SIZE, entry, DIR_ENTRY_SIZE);
+    return disk->writeSector(dirTrack, dirSector, buf);
+}
+
 bool CbmDos::findEntry(const std::string& pattern, uint8_t typeWanted, uint8_t* track, uint8_t* sector)
 {
     if (disk == nullptr) return false;
@@ -216,24 +406,30 @@ bool CbmDos::advanceSector(Channel& ch)
 
 void CbmDos::openFile(uint8_t channel, const std::string& request)
 {
-    Channel& ch = channels[channel];
-    ch          = Channel();
-
     if (disk == nullptr) {
+        channels[channel] = Channel();
         setStatus(74);
         return;
     }
 
-    // "0:NAME,P,R" -> drive prefix, name, then type and mode letters.
-    std::string body  = request;
-    size_t      colon = body.find(':');
+    // "@0:NAME,P,W": an @ asks for the file to be replaced, then an optional
+    // drive prefix, then the name, then the type and mode letters.
+    std::string body    = request;
+    bool        replace = false;
+    if (!body.empty() && body[0] == '@') {
+        replace = true;
+        body    = body.substr(1);
+    }
+    size_t colon = body.find(':');
     if (colon != std::string::npos && colon <= 2) {
         body = body.substr(colon + 1);
     }
 
-    std::string name  = body;
-    uint8_t     type  = FT_PRG;
-    size_t      comma = body.find(',');
+    std::string name = body;
+    uint8_t     type = FT_PRG;
+    char        mode = 0;
+
+    size_t comma = body.find(',');
     if (comma != std::string::npos) {
         name             = body.substr(0, comma);
         std::string rest = body.substr(comma + 1);
@@ -247,28 +443,53 @@ void CbmDos::openFile(uint8_t channel, const std::string& request)
                 case 'u':
                     type = FT_USR;
                     break;
-                case 'P':
-                case 'p':
+                case 'L':
+                case 'l':
+                    // Relative files need side sectors, which are not here.
+                    channels[channel] = Channel();
+                    setStatus(30);
+                    return;
                 default:
                     type = FT_PRG;
                     break;
             }
         }
-        // A write or append mode needs a writable disk, which we do not have.
         size_t modeComma = rest.find(',');
         if (modeComma != std::string::npos && modeComma + 1 < rest.size()) {
-            char mode = rest[modeComma + 1];
-            if (mode == 'W' || mode == 'w' || mode == 'A' || mode == 'a') {
-                setStatus(26);
-                return;
-            }
+            mode = rest[modeComma + 1];
         }
     }
 
     if (name.empty()) {
+        channels[channel] = Channel();
         setStatus(33);
         return;
     }
+
+    // With no explicit mode, the secondary address decides: a real drive treats
+    // channel 1 as a save and channel 0 as a load.
+    bool wantWrite = false;
+    if (mode == 'W' || mode == 'w') {
+        wantWrite = true;
+    } else if (mode == 'A' || mode == 'a') {
+        // Appending means walking to the end of an existing file and carrying
+        // on, which needs more bookkeeping than is here yet.
+        channels[channel] = Channel();
+        setStatus(30);
+        return;
+    } else if (mode == 'R' || mode == 'r') {
+        wantWrite = false;
+    } else {
+        wantWrite = (channel == 1);
+    }
+
+    if (wantWrite) {
+        openWrite(channel, name, type, replace);
+        return;
+    }
+
+    Channel& ch = channels[channel];
+    ch          = Channel();
 
     uint8_t track  = 0;
     uint8_t sector = 0;
@@ -284,6 +505,215 @@ void CbmDos::openFile(uint8_t channel, const std::string& request)
     if (!advanceSector(ch)) {
         ch = Channel();
         setStatus(62);
+        return;
+    }
+    setStatus(0);
+}
+
+void CbmDos::openWrite(uint8_t channel, const std::string& name, uint8_t type, bool replace)
+{
+    Channel& ch = channels[channel];
+    ch          = Channel();
+
+    if (disk == nullptr) {
+        setStatus(74);
+        return;
+    }
+    if (!disk->writable()) {
+        setStatus(26);
+        return;
+    }
+    if (name.empty()) {
+        setStatus(33);
+        return;
+    }
+    // Wildcards are not allowed in a name being created.
+    if (name.find('*') != std::string::npos || name.find('?') != std::string::npos) {
+        setStatus(33);
+        return;
+    }
+    if (!bamLoad()) {
+        setStatus(74);
+        return;
+    }
+
+    uint8_t buf[CBM_SECTOR_SIZE];
+    uint8_t dt = 0, ds = 0, dslot = 0;
+
+    bool exists = findSlot(name, 0xFF, &dt, &ds, &dslot, buf);
+    if (exists && !replace) {
+        setStatus(63);
+        return;
+    }
+    if (exists) {
+        // Replacing: give the old file's blocks back before taking new ones.
+        const uint8_t* old = buf + dslot * DIR_ENTRY_SIZE;
+        bamFreeChain(old[SLOT_FIRST_TRACK], old[SLOT_FIRST_SECTOR]);
+    } else if (!findFreeSlot(&dt, &ds, &dslot, buf)) {
+        setStatus(72);  // no room left in the directory
+        return;
+    }
+
+    uint8_t firstTrack = 0, firstSector = 0;
+    if (!bamAllocate(17, &firstTrack, &firstSector)) {
+        setStatus(72);
+        return;
+    }
+
+    // Write the entry now, still marked unclosed, so an interrupted write
+    // shows up as a splat file exactly as it would on real hardware.
+    uint8_t entry[DIR_ENTRY_SIZE];
+    memset(entry, 0, sizeof(entry));
+    entry[SLOT_TYPE]         = static_cast<uint8_t>(type & FT_MASK);
+    entry[SLOT_FIRST_TRACK]  = firstTrack;
+    entry[SLOT_FIRST_SECTOR] = firstSector;
+    memset(entry + SLOT_NAME, 0xA0, SLOT_NAME_LEN);
+    for (size_t i = 0; i < name.size() && i < SLOT_NAME_LEN; i++) {
+        entry[SLOT_NAME + i] = static_cast<uint8_t>(name[i]);
+    }
+    if (!updateSlot(dt, ds, dslot, entry)) {
+        setStatus(26);
+        return;
+    }
+
+    ch.open      = true;
+    ch.writing   = true;
+    ch.writePos  = 2;
+    ch.curTrack  = firstTrack;
+    ch.curSector = firstSector;
+    ch.blocks    = 0;
+    ch.dirTrack  = dt;
+    ch.dirSector = ds;
+    ch.dirSlot   = dslot;
+    memset(ch.writeBuf, 0, sizeof(ch.writeBuf));
+    setStatus(0);
+}
+
+// Finishes a channel. For a file being written this flushes the last sector,
+// marks the directory entry closed and writes the BAM back.
+void CbmDos::closeChannel(uint8_t channel)
+{
+    Channel& ch = channels[channel];
+
+    if (ch.open && ch.writing && disk != nullptr && disk->writable()) {
+        // Last sector: no link, and the second byte points at the last byte in
+        // use.
+        ch.writeBuf[0] = 0;
+        ch.writeBuf[1] = static_cast<uint8_t>(ch.writePos > 2 ? ch.writePos - 1 : 1);
+        if (disk->writeSector(ch.curTrack, ch.curSector, ch.writeBuf)) {
+            ch.blocks++;
+
+            uint8_t buf[CBM_SECTOR_SIZE];
+            if (disk->readSector(ch.dirTrack, ch.dirSector, buf)) {
+                uint8_t* entry            = buf + ch.dirSlot * DIR_ENTRY_SIZE;
+                entry[SLOT_TYPE]          = static_cast<uint8_t>(entry[SLOT_TYPE] | FT_CLOSED);
+                entry[SLOT_NR_BLOCKS]     = static_cast<uint8_t>(ch.blocks & 0xff);
+                entry[SLOT_NR_BLOCKS + 1] = static_cast<uint8_t>(ch.blocks >> 8);
+                disk->writeSector(ch.dirTrack, ch.dirSector, buf);
+            }
+        }
+        bamFlush();
+        setStatus(0);
+    }
+
+    channels[channel] = Channel();
+}
+
+void CbmDos::scratch(const std::string& pattern)
+{
+    if (disk == nullptr) {
+        setStatus(74);
+        return;
+    }
+    if (!disk->writable()) {
+        setStatus(26);
+        return;
+    }
+    if (!bamLoad()) {
+        setStatus(74);
+        return;
+    }
+
+    // Strip a drive prefix such as "0:".
+    std::string name  = pattern;
+    size_t      colon = name.find(':');
+    if (colon != std::string::npos && colon <= 2) name = name.substr(colon + 1);
+    if (name.empty()) {
+        setStatus(33);
+        return;
+    }
+
+    unsigned int scratched = 0;
+    uint8_t      buf[CBM_SECTOR_SIZE];
+    uint8_t      dt = 0, ds = 0, dslot = 0;
+
+    // findSlot always restarts from the top, and each pass removes the entry
+    // it found, so this terminates.
+    while (scratched < 255 && findSlot(name, 0xFF, &dt, &ds, &dslot, buf)) {
+        uint8_t* entry = buf + dslot * DIR_ENTRY_SIZE;
+        bamFreeChain(entry[SLOT_FIRST_TRACK], entry[SLOT_FIRST_SECTOR]);
+        entry[SLOT_TYPE] = 0;
+        if (!disk->writeSector(dt, ds, buf)) break;
+        scratched++;
+    }
+
+    bamFlush();
+    // A real drive reports the count where the track number normally goes.
+    setStatus(1, static_cast<uint8_t>(scratched));
+}
+
+void CbmDos::renameFile(const std::string& args)
+{
+    if (disk == nullptr) {
+        setStatus(74);
+        return;
+    }
+    if (!disk->writable()) {
+        setStatus(26);
+        return;
+    }
+
+    // "NEW=OLD", either side optionally carrying a drive prefix.
+    size_t equals = args.find('=');
+    if (equals == std::string::npos) {
+        setStatus(33);
+        return;
+    }
+    std::string newName = args.substr(0, equals);
+    std::string oldName = args.substr(equals + 1);
+
+    size_t colon = newName.find(':');
+    if (colon != std::string::npos && colon <= 2) newName = newName.substr(colon + 1);
+    colon = oldName.find(':');
+    if (colon != std::string::npos && colon <= 2) oldName = oldName.substr(colon + 1);
+
+    if (newName.empty() || oldName.empty()) {
+        setStatus(33);
+        return;
+    }
+    if (newName.find('*') != std::string::npos || newName.find('?') != std::string::npos) {
+        setStatus(33);
+        return;
+    }
+
+    uint8_t buf[CBM_SECTOR_SIZE];
+    uint8_t dt = 0, ds = 0, dslot = 0;
+    if (findSlot(newName, 0xFF, &dt, &ds, &dslot, buf)) {
+        setStatus(63);  // the new name is taken
+        return;
+    }
+    if (!findSlot(oldName, 0xFF, &dt, &ds, &dslot, buf)) {
+        setStatus(62);
+        return;
+    }
+
+    uint8_t* entry = buf + dslot * DIR_ENTRY_SIZE;
+    memset(entry + SLOT_NAME, 0xA0, SLOT_NAME_LEN);
+    for (size_t i = 0; i < newName.size() && i < SLOT_NAME_LEN; i++) {
+        entry[SLOT_NAME + i] = static_cast<uint8_t>(newName[i]);
+    }
+    if (!disk->writeSector(dt, ds, buf)) {
+        setStatus(26);
         return;
     }
     setStatus(0);
@@ -424,22 +854,37 @@ void CbmDos::executeCommand(const std::string& command)
 {
     if (command.empty()) return;
 
+    // Commands arrive as a letter followed by their arguments, e.g. "S0:NAME"
+    // or "R0:NEW=OLD".
+    std::string args = command.substr(1);
     switch (command[0]) {
         case 'I':
         case 'i':
-            // Initialise: re-read the disk. Nothing cached, so just report OK.
+            // Initialise: drop the cached BAM so the next access re-reads it.
+            bamLoaded = false;
+            bamDirty  = false;
             setStatus(0);
             break;
         case 'S':
         case 's':
-        case 'N':
-        case 'n':
+            scratch(args);
+            break;
         case 'R':
         case 'r':
+            renameFile(args);
+            break;
+        case 'V':
+        case 'v':
+            // Validate would rebuild the BAM from the directory. Reporting OK
+            // is honest enough while nothing here corrupts it.
+            setStatus(0);
+            break;
+        case 'N':
+        case 'n':
         case 'C':
         case 'c':
-            // Scratch, new, rename and copy all modify the disk.
-            setStatus(26);
+            // Formatting and copying are not implemented.
+            setStatus(31);
             break;
         default:
             setStatus(31);
@@ -456,7 +901,7 @@ void CbmDos::listen(uint8_t secondary)
     nameBuf.clear();
 
     if (pendingCmd == IEC_SEC_CLOSE) {
-        channels[activeChannel] = Channel();
+        closeChannel(activeChannel);
     }
 }
 
@@ -518,9 +963,38 @@ bool CbmDos::write(uint8_t value)
         return true;
     }
 
-    // Writing to a data channel would change the disk.
-    setStatus(26);
-    return false;
+    Channel& ch = channels[activeChannel];
+    if (!ch.open || !ch.writing) {
+        setStatus(61);  // file not open
+        return false;
+    }
+    if (!disk->writable()) {
+        setStatus(26);
+        return false;
+    }
+
+    ch.writeBuf[ch.writePos++] = value;
+    if (ch.writePos >= CBM_SECTOR_SIZE) {
+        // The sector is full, so chain a new one on and flush this one.
+        uint8_t nextTrack  = 0;
+        uint8_t nextSector = 0;
+        if (!bamAllocate(ch.curTrack, &nextTrack, &nextSector)) {
+            setStatus(72);  // disk full
+            return false;
+        }
+        ch.writeBuf[0] = nextTrack;
+        ch.writeBuf[1] = nextSector;
+        if (!disk->writeSector(ch.curTrack, ch.curSector, ch.writeBuf)) {
+            setStatus(25);  // write error
+            return false;
+        }
+        ch.blocks++;
+        ch.curTrack  = nextTrack;
+        ch.curSector = nextSector;
+        ch.writePos  = 2;
+        memset(ch.writeBuf, 0, sizeof(ch.writeBuf));
+    }
+    return true;
 }
 
 bool CbmDos::read(uint8_t* value, bool* eoi)

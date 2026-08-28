@@ -39,11 +39,23 @@ class CbmDos : public IecDevice {
     struct Channel {
         bool open = false;
 
+        // A file being written. The sector under construction lives in
+        // writeBuf until it fills up or the channel is closed.
+        bool         writing = false;
+        uint8_t      writeBuf[CBM_SECTOR_SIZE] = {};
+        unsigned int writePos  = 2;  // link bytes come first
+        uint8_t      curTrack  = 0;
+        uint8_t      curSector = 0;
+        uint16_t     blocks    = 0;
+        uint8_t      dirTrack  = 0;  // where this file's directory slot lives
+        uint8_t      dirSector = 0;
+        uint8_t      dirSlot   = 0;
+
         // A file being streamed off the disk by following its sector chain.
         bool         streaming = false;
         unsigned int track     = 0;
         unsigned int sector    = 0;
-        uint8_t      buf[CBM_SECTOR_SIZE];
+        uint8_t      buf[CBM_SECTOR_SIZE] = {};
         unsigned int pos     = 0;  // next byte to hand out, within buf
         unsigned int used    = 0;  // one past the last valid byte in buf
         unsigned int visited = 0;  // sectors read, to bound a circular chain
@@ -70,6 +82,33 @@ class CbmDos : public IecDevice {
 
     // Status shown on channel 15
     std::string status;
+
+    // The BAM sector, kept in memory while a disk is attached so allocation
+    // does not re-read it for every block.
+    uint8_t bam[CBM_SECTOR_SIZE];
+    bool    bamLoaded = false;
+    bool    bamDirty  = false;
+
+    bool         bamLoad();
+    bool         bamFlush();
+    bool         bamIsFree(unsigned int track, unsigned int sector) const;
+    void         bamSet(unsigned int track, unsigned int sector, bool free);
+    // Finds a free block, preferring one near `nearTrack` the way a real drive
+    // does so a file's blocks stay together.
+    bool         bamAllocate(unsigned int nearTrack, uint8_t* track, uint8_t* sector);
+    void         bamFreeChain(unsigned int track, unsigned int sector);
+    unsigned int bamFreeBlocks() const;
+
+    // Directory slot helpers. `slot` is the 32 byte entry inside `buf`.
+    bool findSlot(const std::string& pattern, uint8_t typeWanted, uint8_t* dirTrack, uint8_t* dirSector,
+                  uint8_t* dirSlot, uint8_t* buf);
+    bool findFreeSlot(uint8_t* dirTrack, uint8_t* dirSector, uint8_t* dirSlot, uint8_t* buf);
+    bool updateSlot(uint8_t dirTrack, uint8_t dirSector, uint8_t dirSlot, const uint8_t* entry);
+
+    void openWrite(uint8_t channel, const std::string& name, uint8_t type, bool replace);
+    void closeChannel(uint8_t channel);
+    void scratch(const std::string& pattern);
+    void renameFile(const std::string& args);
 
     void setStatus(uint8_t code, uint8_t track = 0, uint8_t sector = 0);
     void openFile(uint8_t channel, const std::string& request);

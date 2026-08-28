@@ -5,6 +5,18 @@
 static const unsigned int MIN_TRACKS = 35;
 static const unsigned int MAX_TRACKS = 42;
 
+static bool writeFully(int fd, const void* buf, size_t len)
+{
+    const uint8_t* p = static_cast<const uint8_t*>(buf);
+    while (len > 0) {
+        ssize_t put = write(fd, p, len);
+        if (put <= 0) return false;
+        p   += put;
+        len -= static_cast<size_t>(put);
+    }
+    return true;
+}
+
 static bool readFully(int fd, void* buf, size_t len)
 {
     uint8_t* p = static_cast<uint8_t*>(buf);
@@ -43,13 +55,21 @@ void D64Disk::close()
         fd = -1;
     }
     trackCount = MIN_TRACKS;
+    readOnly   = true;
 }
 
 bool D64Disk::open(const char* path)
 {
     close();
 
-    fd = ::open(path, O_RDONLY);
+    // Prefer read and write so the C64 can save; a card or file that will not
+    // allow it still opens read only.
+    fd       = ::open(path, O_RDWR);
+    readOnly = false;
+    if (fd < 0) {
+        fd       = ::open(path, O_RDONLY);
+        readOnly = true;
+    }
     if (fd < 0) return false;
 
     off_t fileSize = lseek(fd, 0, SEEK_END);
@@ -97,4 +117,20 @@ bool D64Disk::readSector(unsigned int track, unsigned int sector, uint8_t* buf)
 
     if (lseek(fd, offset, SEEK_SET) < 0) return false;
     return readFully(fd, buf, CBM_SECTOR_SIZE);
+}
+
+bool D64Disk::writeSector(unsigned int track, unsigned int sector, const uint8_t* buf)
+{
+    if (!writable()) return false;
+    unsigned int perTrack = sectorsOnTrack(track);
+    if (perTrack == 0 || track > trackCount || sector >= perTrack) return false;
+
+    off_t offset = 0;
+    for (unsigned int t = 1; t < track; t++) {
+        offset += static_cast<off_t>(sectorsOnTrack(t)) * CBM_SECTOR_SIZE;
+    }
+    offset += static_cast<off_t>(sector) * CBM_SECTOR_SIZE;
+
+    if (lseek(fd, offset, SEEK_SET) < 0) return false;
+    return writeFully(fd, buf, CBM_SECTOR_SIZE);
 }

@@ -36,6 +36,7 @@ class MemDisk : public DiskImage {
    public:
     std::vector<uint8_t> bytes;
     unsigned int         trackCount = 35;
+    bool                 readOnly   = true;
 
     MemDisk()
     {
@@ -57,9 +58,16 @@ class MemDisk : public DiskImage {
         memcpy(buf, &bytes[offset(track, sector)], CBM_SECTOR_SIZE);
         return true;
     }
+    bool writeSector(unsigned int track, unsigned int sector, const uint8_t* buf) override
+    {
+        if (readOnly) return false;
+        if (track < 1 || track > trackCount || sector >= sectorsPerTrack(track)) return false;
+        memcpy(&bytes[offset(track, sector)], buf, CBM_SECTOR_SIZE);
+        return true;
+    }
     bool writable() const override
     {
-        return false;
+        return !readOnly;
     }
     unsigned int tracks() const override
     {
@@ -132,12 +140,50 @@ static void populate(MemDisk& disk, const std::vector<TestFile>& files)
         placed.push_back(first);
     }
 
-    // BAM at 18/0: disk name, id, dos type, and a free count per track.
+    // BAM at 18/0: disk name, id, dos type, and a free count plus bitmap per
+    // track. Start with everything free, then mark what the files and the
+    // directory actually occupy.
     size_t bam          = disk.offset(18, 0);
     disk.bytes[bam]     = 18;
     disk.bytes[bam + 1] = 1;
     for (unsigned int t = 1; t <= 35; t++) {
-        disk.bytes[bam + 4 + (t - 1) * 4] = static_cast<uint8_t>(t == 18 ? 0 : 5);
+        unsigned int per  = D64Disk::sectorsOnTrack(t);
+        size_t       e    = bam + 4 + (t - 1) * 4;
+        disk.bytes[e]     = static_cast<uint8_t>(per);
+        disk.bytes[e + 1] = 0;
+        disk.bytes[e + 2] = 0;
+        disk.bytes[e + 3] = 0;
+        for (unsigned int sec = 0; sec < per; sec++) {
+            disk.bytes[e + 1 + (sec >> 3)] |= static_cast<uint8_t>(1 << (sec & 7));
+        }
+    }
+    // Track 18 holds the BAM and directory; treat the whole track as taken.
+    {
+        size_t e          = bam + 4 + 17 * 4;
+        disk.bytes[e]     = 0;
+        disk.bytes[e + 1] = 0;
+        disk.bytes[e + 2] = 0;
+        disk.bytes[e + 3] = 0;
+    }
+    // Mark every sector the placed files occupy as used.
+    for (unsigned int t = 1; t <= 35; t++) {
+        if (t == 18) continue;
+        unsigned int per = D64Disk::sectorsOnTrack(t);
+        for (unsigned int sec = 0; sec < per; sec++) {
+            size_t off  = disk.offset(t, sec);
+            // A sector that was written to has a nonzero link or payload.
+            bool   used = false;
+            for (unsigned int i = 0; i < CBM_SECTOR_SIZE && !used; i++) {
+                if (disk.bytes[off + i] != 0) used = true;
+            }
+            if (!used) continue;
+            size_t  e    = bam + 4 + (t - 1) * 4;
+            uint8_t mask = static_cast<uint8_t>(1 << (sec & 7));
+            if (disk.bytes[e + 1 + (sec >> 3)] & mask) {
+                disk.bytes[e + 1 + (sec >> 3)] &= static_cast<uint8_t>(~mask);
+                if (disk.bytes[e] > 0) disk.bytes[e]--;
+            }
+        }
     }
     putPetName(disk.bytes, bam + 0x90, "TESTDISK");
     // A formatted disk pads this area with shifted spaces, not nulls.
@@ -484,6 +530,195 @@ static void testViceExactFormats()
     CHECK(dir[dir.size() - 2] == 0x00 && dir[dir.size() - 1] == 0x00, "missing end of program link");
 }
 
+// Performs what the Kernal does for SAVE: open a channel for write, push the
+// bytes through, then close it.
+static void kernalWrite(CbmDos& dos, uint8_t channel, const std::vector<uint8_t>& data)
+{
+    dos.listen(static_cast<uint8_t>(IEC_SEC_DATA | channel));
+    for (size_t i = 0; i < data.size(); i++) {
+        dos.write(data[i]);
+    }
+    dos.unlisten();
+}
+
+static std::string statusOf(CbmDos& dos)
+{
+    std::vector<uint8_t> st = kernalRead(dos, CbmDos::CMD_CHANNEL);
+    return std::string(st.begin(), st.end());
+}
+
+static void testSaveRoundTrip()
+{
+    printf("DOS: SAVE then LOAD returns the same bytes\n");
+    MemDisk disk;
+    disk.readOnly = false;
+    std::vector<TestFile> files;
+    files.push_back({"EXISTING", makePrg(0x0801, 100, 1), 0x82});
+    populate(disk, files);
+
+    CbmDos dos;
+    dos.setDisk(&disk);
+
+    // A save is an open on channel 1, which implies write with no mode given.
+    std::vector<uint8_t> payload = makePrg(0x0801, 700, 9);
+    kernalOpen(dos, 1, "NEWFILE");
+    CHECK(statusOf(dos).compare(0, 2, "00") == 0, "open for write failed");
+    kernalWrite(dos, 1, payload);
+    kernalClose(dos, 1);
+    CHECK(statusOf(dos).compare(0, 2, "00") == 0, "close after write failed");
+
+    // Read it back through a fresh channel.
+    kernalOpen(dos, 0, "NEWFILE");
+    std::vector<uint8_t> got = kernalRead(dos, 0);
+    CHECK(got.size() == payload.size(), "read back %zu bytes, wrote %zu", got.size(), payload.size());
+    CHECK(got == payload, "read back different bytes than were written");
+
+    // And it should show up in the directory, closed, with a block count.
+    kernalOpen(dos, 0, "$");
+    std::vector<uint8_t> dir = kernalRead(dos, 0);
+    std::string          text(dir.begin(), dir.end());
+    size_t               at = text.find("NEWFILE");
+    CHECK(at != std::string::npos, "saved file missing from the directory");
+    if (at != std::string::npos) {
+        CHECK(text[at + 17] == ' ', "saved file still marked unclosed");
+        CHECK(memcmp(&text[at + 18], "PRG", 3) == 0, "saved file has the wrong type");
+    }
+    // The entry line puts the block count at bytes 2 and 3, and the name
+    // begins at byte 8, so the count sits six bytes before the name.
+    // 702 bytes needs three blocks of 254.
+    CHECK(at != std::string::npos && dir[at - 6] == 3, "block count was %u, expected 3",
+          at != std::string::npos ? dir[at - 6] : 0);
+}
+
+static void testSaveRefusedWhenExisting()
+{
+    printf("DOS: saving over a file needs the @ prefix\n");
+    MemDisk disk;
+    disk.readOnly = false;
+    std::vector<TestFile> files;
+    files.push_back({"TAKEN", makePrg(0x0801, 100, 1), 0x82});
+    populate(disk, files);
+
+    CbmDos dos;
+    dos.setDisk(&disk);
+
+    kernalOpen(dos, 1, "TAKEN");
+    CHECK(statusOf(dos).compare(0, 2, "63") == 0, "expected FILE EXISTS");
+
+    // With @ it replaces, and the new contents win.
+    std::vector<uint8_t> payload = makePrg(0x1000, 50, 4);
+    kernalOpen(dos, 1, "@:TAKEN");
+    CHECK(statusOf(dos).compare(0, 2, "00") == 0, "replace open failed");
+    kernalWrite(dos, 1, payload);
+    kernalClose(dos, 1);
+
+    kernalOpen(dos, 0, "TAKEN");
+    std::vector<uint8_t> got = kernalRead(dos, 0);
+    CHECK(got == payload, "replaced file has the old contents");
+}
+
+static void testScratchAndRename()
+{
+    printf("DOS: scratch frees blocks, rename changes the name\n");
+    MemDisk disk;
+    disk.readOnly = false;
+    std::vector<TestFile> files;
+    files.push_back({"GONE", makePrg(0x0801, 2000, 1), 0x82});
+    files.push_back({"KEPT", makePrg(0x0801, 100, 2), 0x82});
+    populate(disk, files);
+
+    CbmDos dos;
+    dos.setDisk(&disk);
+
+    // Blocks free before and after should differ by the scratched file's size.
+    kernalOpen(dos, 0, "$");
+    std::vector<uint8_t> before = kernalRead(dos, 0);
+    uint16_t freeBefore = static_cast<uint16_t>(before[before.size() - 34 + 2] | (before[before.size() - 34 + 3] << 8));
+
+    kernalOpen(dos, CbmDos::CMD_CHANNEL, "S0:GONE");
+    std::string st = statusOf(dos);
+    CHECK(st.compare(0, 2, "01") == 0, "scratch reported '%s'", st.c_str());
+    CHECK(st.find("FILES SCRATCHED") != std::string::npos, "scratch reported '%s'", st.c_str());
+
+    kernalOpen(dos, 0, "GONE");
+    CHECK(statusOf(dos).compare(0, 2, "62") == 0, "scratched file is still loadable");
+
+    kernalOpen(dos, 0, "$");
+    std::vector<uint8_t> after = kernalRead(dos, 0);
+    uint16_t freeAfter = static_cast<uint16_t>(after[after.size() - 34 + 2] | (after[after.size() - 34 + 3] << 8));
+    CHECK(freeAfter > freeBefore, "scratch did not free blocks (%u -> %u)", freeBefore, freeAfter);
+
+    std::string atext(after.begin(), after.end());
+    CHECK(atext.find("GONE") == std::string::npos, "scratched file still listed");
+
+    // Rename, then the old name should be gone and the new one loadable.
+    kernalOpen(dos, CbmDos::CMD_CHANNEL, "R0:RENAMED=KEPT");
+    CHECK(statusOf(dos).compare(0, 2, "00") == 0, "rename failed");
+    kernalOpen(dos, 0, "RENAMED");
+    std::vector<uint8_t> got = kernalRead(dos, 0);
+    CHECK(got.size() == 102, "renamed file did not load (%zu bytes)", got.size());
+    kernalOpen(dos, 0, "KEPT");
+    CHECK(statusOf(dos).compare(0, 2, "62") == 0, "old name still resolves after rename");
+
+    // Renaming onto an existing name must be refused.
+    kernalOpen(dos, CbmDos::CMD_CHANNEL, "R0:RENAMED=RENAMED");
+    CHECK(statusOf(dos).compare(0, 2, "63") == 0, "rename onto an existing name was allowed");
+}
+
+static void testWriteBoundaries()
+{
+    printf("DOS: writes land correctly either side of a sector boundary\n");
+    MemDisk disk;
+    disk.readOnly = false;
+    std::vector<TestFile> files;
+    populate(disk, files);
+
+    CbmDos dos;
+    dos.setDisk(&disk);
+
+    // 254 bytes is exactly one sector's payload; 255 spills into a second.
+    const size_t sizes[] = {1, 253, 254, 255, 508, 509};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "F%zu", sizes[i]);
+
+        std::vector<uint8_t> payload;
+        for (size_t b = 0; b < sizes[i]; b++) payload.push_back(static_cast<uint8_t>(b & 0xff));
+
+        kernalOpen(dos, 1, name);
+        kernalWrite(dos, 1, payload);
+        kernalClose(dos, 1);
+
+        kernalOpen(dos, 0, name);
+        std::vector<uint8_t> got = kernalRead(dos, 0);
+        CHECK(got == payload, "%s: read back %zu bytes of %zu", name, got.size(), sizes[i]);
+    }
+}
+
+static void testDiskFull()
+{
+    printf("DOS: a full disk reports 72 rather than writing anywhere\n");
+    MemDisk disk;
+    disk.readOnly = false;
+    std::vector<TestFile> files;
+    populate(disk, files);
+
+    // Mark every track as having nothing free.
+    size_t bam = disk.offset(18, 0);
+    for (unsigned int t = 1; t <= 35; t++) {
+        size_t e          = bam + 4 + (t - 1) * 4;
+        disk.bytes[e]     = 0;
+        disk.bytes[e + 1] = 0;
+        disk.bytes[e + 2] = 0;
+        disk.bytes[e + 3] = 0;
+    }
+
+    CbmDos dos;
+    dos.setDisk(&disk);
+    kernalOpen(dos, 1, "NOROOM");
+    CHECK(statusOf(dos).compare(0, 2, "72") == 0, "expected DISK FULL");
+}
+
 int main()
 {
     testLoadFile();
@@ -495,6 +730,11 @@ int main()
     testNoDisk();
     testCircularChain();
     testViceExactFormats();
+    testSaveRoundTrip();
+    testSaveRefusedWhenExisting();
+    testScratchAndRename();
+    testWriteBoundaries();
+    testDiskFull();
 
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
