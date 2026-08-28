@@ -30,7 +30,7 @@ void MainMenu::resetC64(MenuItem* item)
 bool MainMenu::init()
 {
     int id_count = 1;
-    loadMenu     = new LoadMenu("Load PRG", this, menuController);
+    loadMenu     = new LoadMenu("Load file", this, menuController);
     loadMenu->init();
 
     MenuDataStore* menuDataStore = MenuDataStore::getInstance();
@@ -38,7 +38,7 @@ bool MainMenu::init()
     // Setup the menu entries
     MenuItem* load_prg = new MenuItem();
     load_prg->id       = id_count++;
-    load_prg->title    = "Load PRG";
+    load_prg->title    = "Load file";
     load_prg->type     = MenuItemType::SUBMENU;
     load_prg->submenu  = loadMenu;
     items.push_back(*load_prg);

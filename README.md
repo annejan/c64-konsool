@@ -28,15 +28,45 @@ Since the menu structure is still being developed, I'm going to not document mor
 
 ## Games / Sofware
 
-### Loading prg files
+### Supported file formats
 
-At this time only the loading of **.PRG** files is supported, .d64 files are in the planning.
+| Format   | Support                                                              |
+| -------- | -------------------------------------------------------------------- |
+| **.PRG** | Full. Loaded straight into memory.                                    |
+| **.T64** | Full. Pick a program from the tape container.                         |
+| **.D64** | Read only. Lists the PRG files on the disk and loads the one you pick. |
+| .TAP     | Not supported, needs datasette emulation.                             |
+| .CRT     | Not supported, needs cartridge ROM banking.                           |
 
-- To load .prg files, put them on in a directory named 'c64prg' SD card file system.
+### Loading files
 
-- By Opening the menu and select 'Load PRG', a .prg file can be selected and loaded.
+- Put your files in a directory named `c64prg` on the SD card. The directory is
+  created for you the first time the emulator starts with a card inserted.
+
+- Open the menu, select 'Load file', and pick a file. Choosing a .t64 or .d64
+  opens a second menu listing the programs inside it; press ESC to go back.
 
 - When the C64 screen shows again, type the command 'run' and press enter.
+
+### What the .d64 support does and does not do
+
+Programs are copied out of the disk image and placed directly in memory, the
+same way a .prg is. There is no 1541 drive and no serial bus behind it, so:
+
+- Only PRG files on the disk are listed. SEQ, USR and REL files are not.
+- A title that loads further parts from disk while it runs, or that uses its own
+  fast loader, will not get past its first stage.
+- Nothing is written back. The image is opened read only.
+
+Files that were never closed properly on the original disk are listed with a
+trailing `*`, exactly as a real directory listing marks them, and will usually
+fail to load.
+
+### Loading from BASIC
+
+`LOAD"NAME",8` still works from the C64 prompt and still loads `NAME.PRG` from
+the `c64prg` directory. It does not reach inside .t64 or .d64 containers; use
+the menu for those.
 
 ### Joystick emulation
 
@@ -87,6 +117,19 @@ make prepare
 ```bash
 make build
 ```
+
+## Running the image format tests
+
+The .t64 and .d64 readers depend on nothing but POSIX file calls, so they can be
+built and tested on a normal machine without ESP-IDF:
+
+```bash
+make -C main/src/images/test run
+```
+
+The tests build synthetic images, including ones with the malformed headers that
+turn up in the wild, and check that the right bytes end up at the right
+addresses.
 
 ## Upload to the Tanmatsu
 

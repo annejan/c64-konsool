@@ -82,6 +82,9 @@ class ExternalCmds {
     bool initialized = false;
 
     void setVarTab(uint16_t addr);
+    // Hands control back to the C64 after a load attempt, printing READY or an
+    // error through the injected loadactions routine.
+    void finishLoad(bool fileloaded, bool error);
     void setType1Notification();
     void setType2Notification();
     void setType3Notification(uint16_t addr);
@@ -102,7 +105,13 @@ class ExternalCmds {
     BLENotificationStruct5 type5notification;
 
     void    init(uint8_t* ram, C64Emu* c64emu);
+    // Loads a bare .prg. `filename` carries no extension.
     bool    loadPrg(const char* filename);
+    // Loads any supported file from the program directory. `filename` includes
+    // its extension; a .t64 or .d64 loads the first program it holds.
+    bool    loadFile(const char* filename);
+    // Loads one program out of a .t64 or .d64 by its index in entries().
+    bool    loadImageEntry(const char* filename, uint16_t index);
     void    reset();
     uint8_t executeExternalCmd(uint8_t* buffer);
 };
