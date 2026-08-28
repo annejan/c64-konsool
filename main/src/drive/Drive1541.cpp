@@ -1,0 +1,228 @@
+/*
+ The serial port behaviour in VIA 1, in particular the gate that pulls DATA
+ low when the attention acknowledge does not match the state of ATN, follows
+ Frodo's CPU1541.cpp.
+
+ Frodo (C) 1994-1997, 2002 Christian Bauer, GPL version 2 or later.
+*/
+#include "Drive1541.hpp"
+#include <cstring>
+
+// VIA 1 port B, the serial bus. The bus drivers invert, so a line held low
+// reads back as a one here, and writing a one pulls a line low.
+static const uint8_t VIA1_DATA_IN  = 0x01;
+static const uint8_t VIA1_DATA_OUT = 0x02;
+static const uint8_t VIA1_CLK_IN   = 0x04;
+static const uint8_t VIA1_CLK_OUT  = 0x08;
+static const uint8_t VIA1_ATNA     = 0x10;
+static const uint8_t VIA1_ATN_IN   = 0x80;
+
+// VIA 2 port B, the disk hardware.
+static const uint8_t VIA2_STEP_MASK = 0x03;
+static const uint8_t VIA2_MOTOR     = 0x04;
+static const uint8_t VIA2_LED       = 0x08;
+static const uint8_t VIA2_SYNC      = 0x80;
+
+Drive1541::Drive1541()
+{
+    memset(ram, 0, sizeof(ram));
+}
+
+void Drive1541::setRom(uint8_t* romImage)
+{
+    rom       = romImage;
+    romLoaded = (romImage != nullptr);
+}
+
+void Drive1541::reset()
+{
+    memset(ram, 0, sizeof(ram));
+    via1.reset();
+    via2.reset();
+    controller.reset();
+    lastStepperPhase = 0;
+    idle             = false;
+    cpuhalted        = false;
+
+    if (lines != nullptr) {
+        lines->driveClk  = false;
+        lines->driveData = false;
+    }
+
+    if (romLoaded) {
+        // The reset vector lives at the very top of the ROM.
+        pc = static_cast<uint16_t>(rom[ROM_SIZE - 4] | (rom[ROM_SIZE - 3] << 8));
+    }
+    sp    = 0xFF;
+    iflag = true;
+}
+
+// Works out what the drive is pulling low, and pushes it onto the shared bus.
+void Drive1541::updateIecOutputs()
+{
+    if (lines == nullptr) return;
+
+    // Only bits configured as outputs drive the bus.
+    uint8_t out = static_cast<uint8_t>(via1.prb & via1.ddrb);
+
+    bool clkOut  = (out & VIA1_CLK_OUT) != 0;
+    bool dataOut = (out & VIA1_DATA_OUT) != 0;
+    bool atna    = (out & VIA1_ATNA) != 0;
+
+    // The attention acknowledge gate: DATA is pulled low whenever the
+    // acknowledge does not agree with the state of ATN. That is what holds
+    // DATA down until the drive has noticed an ATN it was sent.
+    lines->driveClk  = clkOut;
+    lines->driveData = dataOut || (atna != lines->atnLow());
+}
+
+// The stepper turns through four phases; which way it went tells the head
+// whether to move in or out.
+void Drive1541::updateStepper(uint8_t portB)
+{
+    uint8_t phase = static_cast<uint8_t>(portB & VIA2_STEP_MASK);
+    if (phase == lastStepperPhase) return;
+
+    uint8_t forward = static_cast<uint8_t>((lastStepperPhase + 1) & VIA2_STEP_MASK);
+    if (phase == forward) {
+        controller.moveHeadIn();
+    } else {
+        controller.moveHeadOut();
+    }
+    lastStepperPhase = phase;
+}
+
+uint8_t Drive1541::readVia1(uint8_t reg)
+{
+    uint8_t input = 0;
+    if (lines != nullptr) {
+        if (lines->dataLow()) input |= VIA1_DATA_IN;
+        if (lines->clkLow()) input |= VIA1_CLK_IN;
+        if (lines->atnLow()) input |= VIA1_ATN_IN;
+    }
+    // Port B bits 5 and 6 are the device address jumpers; both low is
+    // device 8.
+    return via1.read(reg, 0xff, input);
+}
+
+uint8_t Drive1541::readVia2(uint8_t reg)
+{
+    switch (reg & 0x0f) {
+        case Via6522::REG_PRA:
+        case Via6522::REG_PRA_NH:
+            // Port A is the head. Reading it takes the next byte off the
+            // track, which is what advances the "rotation".
+            return controller.readGcrByte();
+
+        case Via6522::REG_PRB: {
+            // Sync is active low, and the write protect sense sits alongside.
+            uint8_t input = static_cast<uint8_t>(controller.writeProtectBit());
+            if (!controller.syncFound()) input |= VIA2_SYNC;
+            return via2.read(reg, 0xff, input);
+        }
+
+        default:
+            return via2.read(reg, 0xff, 0xff);
+    }
+}
+
+void Drive1541::writeVia1(uint8_t reg, uint8_t value)
+{
+    via1.write(reg, value);
+    uint8_t r = reg & 0x0f;
+    if (r == Via6522::REG_PRB || r == Via6522::REG_DDRB) {
+        updateIecOutputs();
+    }
+}
+
+void Drive1541::writeVia2(uint8_t reg, uint8_t value)
+{
+    via2.write(reg, value);
+    uint8_t r = reg & 0x0f;
+    if (r == Via6522::REG_PRB || r == Via6522::REG_DDRB) {
+        updateStepper(static_cast<uint8_t>(via2.prb & via2.ddrb));
+    }
+}
+
+uint8_t Drive1541::getMem(uint16_t addr)
+{
+    if (addr < 0x1800) {
+        // 2K of RAM, mirrored through the bottom of the map.
+        return ram[addr & (RAM_SIZE - 1)];
+    }
+    if (addr < 0x1c00) {
+        return readVia1(static_cast<uint8_t>(addr & 0x0f));
+    }
+    if (addr < 0x2000) {
+        return readVia2(static_cast<uint8_t>(addr & 0x0f));
+    }
+    if (addr >= 0xc000 && rom != nullptr) {
+        return rom[addr - 0xc000];
+    }
+    // Nothing is mapped in the middle of the drive's address space.
+    return 0;
+}
+
+void Drive1541::setMem(uint16_t addr, uint8_t val)
+{
+    if (addr < 0x1800) {
+        ram[addr & (RAM_SIZE - 1)] = val;
+        return;
+    }
+    if (addr < 0x1c00) {
+        writeVia1(static_cast<uint8_t>(addr & 0x0f), val);
+        return;
+    }
+    if (addr < 0x2000) {
+        writeVia2(static_cast<uint8_t>(addr & 0x0f), val);
+        return;
+    }
+    // ROM and unmapped space ignore writes.
+}
+
+void Drive1541::countTimers(unsigned int cycles)
+{
+    via1.countTimers(cycles);
+    via2.countTimers(cycles);
+}
+
+void Drive1541::refreshIecOutputs()
+{
+    updateIecOutputs();
+}
+
+unsigned int Drive1541::stepInstruction()
+{
+    if (!romLoaded) return 1;
+
+    // An interrupt from either VIA wakes the drive.
+    if (!iflag && (via1.irqAsserted() || via2.irqAsserted())) {
+        setPCToIntVec(static_cast<uint16_t>(getMem(0xfffe) | (getMem(0xffff) << 8)), false);
+    }
+
+    uint8_t before = numofcycles;
+    execute(getMem(pc++));
+    uint8_t used = static_cast<uint8_t>(numofcycles - before);
+    return used > 0 ? used : 1;
+}
+
+unsigned int Drive1541::emulateCycles(unsigned int cycles)
+{
+    if (!romLoaded) return cycles;
+
+    numofcycles = 0;
+    while (numofcycles < cycles) {
+        // An interrupt from either VIA wakes the drive.
+        if (!iflag && (via1.irqAsserted() || via2.irqAsserted())) {
+            setPCToIntVec(static_cast<uint16_t>(getMem(0xfffe) | (getMem(0xffff) << 8)), false);
+        }
+        execute(getMem(pc++));
+    }
+    return numofcycles;
+}
+
+void Drive1541::run()
+{
+    // The drive is stepped from the C64's loop rather than running a loop of
+    // its own, so there is nothing to do here.
+}

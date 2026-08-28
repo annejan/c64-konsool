@@ -141,8 +141,14 @@ uint8_t CPUC64::getMem(uint16_t addr) {
         else if (addr <= 0xddff) {
             uint8_t ciaidx = (addr - 0xdd00) % 0x10;
             if (ciaidx == 0x00) {
-                uint8_t ddra = cia2.ciaReg[0x02];
-                return cia2.ciaReg[0x00] | ~ddra;
+                uint8_t ddra  = cia2.ciaReg[0x02];
+                // Bits 0 to 5 read back the port; bits 6 and 7 are the serial
+                // bus, and are set when the line is released. Following
+                // Frodo's MOS6526_2::ReadRegister.
+                uint8_t value = static_cast<uint8_t>((cia2.ciaReg[0x00] | ~ddra) & 0x3f);
+                if (!iecLines.clkLow()) value |= 0x40;
+                if (!iecLines.dataLow()) value |= 0x80;
+                return value;
             } else if (ciaidx == 0x01) {
                 uint8_t ddrb = cia2.ciaReg[0x03];
                 return cia2.ciaReg[0x01] | ~ddrb;
@@ -316,9 +322,21 @@ void CPUC64::setMem(uint16_t addr, uint8_t val) {
                         vic->vicmem = 0x0000;
                         break;
                 }
-                cia2.ciaReg[ciaidx] = 0x94 | bank;
+                cia2.ciaReg[ciaidx] = val;
                 // adapt VIC base addresses
                 adaptVICBaseAddrs(true);
+
+                // The same register drives the serial bus. A one written to an
+                // output bit pulls its line low; a bit left as an input drives
+                // nothing.
+                uint8_t driven   = static_cast<uint8_t>(val & cia2.ciaReg[0x02]);
+                bool    atnWas   = iecLines.atnLow();
+                iecLines.c64Atn  = (driven & 0x08) != 0;
+                iecLines.c64Clk  = (driven & 0x10) != 0;
+                iecLines.c64Data = (driven & 0x20) != 0;
+                if (iecLines.atnLow() != atnWas) {
+                    onAtnChanged();
+                }
             } else {
                 cia2.setCommonCIAReg(ciaidx, val);
             }
@@ -471,6 +489,84 @@ bool CPUC64::handleIecTrap(uint16_t addr) {
     return true;
 }
 
+// ATN going low is the drive's cue to look at the bus, so it has to be woken
+// even if it had parked itself.
+bool CPUC64::enableTrueDrive(uint8_t* romImage, DiskImage* image) {
+    if (romImage == nullptr) return false;
+
+    // The traps and the real drive cannot both answer device 8.
+    removeIecTraps();
+
+    drive.setLines(&iecLines);
+    drive.setRom(romImage);
+    drive.setDisk(image);
+    if (!drive.ready()) return false;
+
+    iecLines.reset();
+    drive.reset();
+    driveCycleDebt   = 0;
+    trueDriveEnabled = true;
+    ESP_LOGI(TAG, "true drive emulation on");
+    return true;
+}
+
+void CPUC64::disableTrueDrive() {
+    if (!trueDriveEnabled) return;
+    trueDriveEnabled = false;
+    drive.setDisk(nullptr);
+    iecLines.reset();
+    driveCycleDebt = 0;
+    ESP_LOGI(TAG, "true drive emulation off");
+}
+
+void CPUC64::onAtnChanged() {
+    if (!trueDriveEnabled) return;
+    drive.idle = false;
+    // The acknowledge gate depends on ATN, so the drive's outputs change the
+    // moment ATN does, without the drive CPU running.
+    drive.refreshIecOutputs();
+}
+
+// Runs the C64 up to `untilCycles` of this rasterline, giving the drive its
+// turn along the way.
+//
+// The 1541 runs at very nearly the same speed as the C64, so it earns a cycle
+// for every cycle the C64 spends. Following Frodo, the two are alternated an
+// instruction at a time rather than a cycle at a time: whichever has fallen
+// behind runs next. That is close enough for loaders that hand bytes back and
+// forth over the bus, and far cheaper than stepping both cycle by cycle.
+void CPUC64::executeUntilCycle(uint8_t untilCycles) {
+    bool withDrive = trueDriveEnabled && drive.ready() && !drive.idle;
+
+    while (numofcycles < untilCycles) {
+        if (cpuhalted) {
+            break;
+        }
+
+        if (withDrive && driveCycleDebt > 0) {
+            driveCycleDebt -= static_cast<int>(drive.stepInstruction());
+            continue;
+        }
+
+        logDebugInfo();
+        uint8_t before = numofcycles;
+        execute(getMem(pc++));
+
+        if (withDrive) {
+            // The drive owes itself whatever the C64 just spent.
+            driveCycleDebt += static_cast<int>(static_cast<uint8_t>(numofcycles - before));
+        }
+    }
+}
+
+void CPUC64::emulateDriveCycles(unsigned int c64Cycles) {
+    if (!trueDriveEnabled || !drive.ready()) return;
+
+    // Timers keep running even while the drive is parked, so an interrupt it
+    // is waiting on still arrives.
+    drive.countTimers(c64Cycles);
+}
+
 void CPUC64::cmd6502halt() {
     // The JAM opcode has already been fetched, so the trapped routine starts
     // one byte back.
@@ -618,25 +714,15 @@ void IRAM_ATTR CPUC64::run() {
         // Do CIA checks half way through the rasterline
         // But not during bad lines
         for (uint8_t i = 0; i < n - 1; i++) {
-            while (numofcycles < sumtmp) {
-                if (cpuhalted) {
-                    break;
-                }
-                logDebugInfo();
-                execute(getMem(pc++));
-            }
+            executeUntilCycle(sumtmp);
             checkciatimers(tmp);
             sumtmp += tmp;
         }
         // Finish the raster line
         tmp = numofcyclestoexe - numofcycles;
-        while (numofcycles < numofcyclestoexe) {
-            if (cpuhalted) {
-                break;
-            }
-            logDebugInfo();
-            execute(getMem(pc++));
-        }
+        executeUntilCycle(numofcyclestoexe);
+
+        emulateDriveCycles(numofcycles);
 
         // Make sure 63 cycles per rasterline on average
         cycles_extra = numofcycles - numofcyclestoexe;

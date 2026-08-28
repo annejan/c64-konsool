@@ -26,6 +26,9 @@
 #include "images/CbmImage.hpp"
 #include "images/D64Image.hpp"
 #include "images/T64Image.hpp"
+#include <fcntl.h>
+#include <unistd.h>
+#include "drive/Drive1541.hpp"
 
 static const char* TAG = "ExternalCmds";
 
@@ -224,6 +227,69 @@ bool ExternalCmds::loadImageEntry(const char* filename, uint16_t index) {
     return fileloaded;
 }
 
+// Reads the 1541 DOS ROM off the card. It is a copyrighted 16K binary so it
+// is not shipped with the firmware; drop it next to the disk images as
+// "1541.rom" to use the real drive.
+bool ExternalCmds::loadDriveRom() {
+    if (driveRom != nullptr) return true;
+    if (!sdcard.init()) return false;
+
+    std::string path = SDCard::fullPath(DRIVE_ROM_FILENAME);
+    int         fd   = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        ESP_LOGW(TAG, "no %s on the card, true drive emulation unavailable", DRIVE_ROM_FILENAME);
+        return false;
+    }
+
+    uint8_t* buffer    = new uint8_t[Drive1541::ROM_SIZE];
+    size_t   remaining = Drive1541::ROM_SIZE;
+    size_t   total     = 0;
+    while (remaining > 0) {
+        ssize_t got = read(fd, buffer + total, remaining);
+        if (got <= 0) break;
+        total     += static_cast<size_t>(got);
+        remaining -= static_cast<size_t>(got);
+    }
+    close(fd);
+
+    if (total != Drive1541::ROM_SIZE) {
+        ESP_LOGE(TAG, "%s is %u bytes, expected %u", DRIVE_ROM_FILENAME, static_cast<unsigned>(total),
+                 static_cast<unsigned>(Drive1541::ROM_SIZE));
+        delete[] buffer;
+        return false;
+    }
+
+    driveRom = buffer;
+    ESP_LOGI(TAG, "loaded %s", DRIVE_ROM_FILENAME);
+    return true;
+}
+
+bool ExternalCmds::setTrueDriveEmulation(bool enabled) {
+    if (!enabled) {
+        c64emu->cpu.disableTrueDrive();
+        trueDrive = false;
+        // Hand device 8 back to the traps if a disk is still mounted.
+        if (mounted) {
+            c64emu->cpu.cpuhalted = true;
+            c64emu->cpu.installIecTraps();
+            c64emu->cpu.cpuhalted = false;
+        }
+        return true;
+    }
+
+    if (!loadDriveRom()) {
+        trueDrive = false;
+        return false;
+    }
+
+    c64emu->cpu.cpuhalted = true;
+    bool ok               = c64emu->cpu.enableTrueDrive(driveRom, mounted ? &disk : nullptr);
+    c64emu->cpu.cpuhalted = false;
+
+    trueDrive = ok;
+    return ok;
+}
+
 bool ExternalCmds::mountDisk(const char* filename) {
     unmountDisk();
 
@@ -240,6 +306,22 @@ bool ExternalCmds::mountDisk(const char* filename) {
     if (!disk.open(path.c_str())) {
         ESP_LOGE(TAG, "cannot read disk image %s", path.c_str());
         return false;
+    }
+
+    if (trueDrive) {
+        // The real drive reads the image itself, so the DOS emulation and the
+        // traps stay out of the way entirely.
+        c64emu->cpu.cpuhalted = true;
+        bool ok               = c64emu->cpu.enableTrueDrive(driveRom, &disk);
+        c64emu->cpu.cpuhalted = false;
+        if (!ok) {
+            disk.close();
+            return false;
+        }
+        mounted     = true;
+        mountedName = filename;
+        ESP_LOGI(TAG, "mounted %s in the emulated 1541", filename);
+        return true;
     }
 
     dos.setDeviceNumber(8);
@@ -268,6 +350,15 @@ bool ExternalCmds::mountDisk(const char* filename) {
 
 void ExternalCmds::unmountDisk() {
     if (!mounted) return;
+
+    if (trueDrive) {
+        c64emu->cpu.disableTrueDrive();
+        disk.close();
+        mounted = false;
+        mountedName.clear();
+        ESP_LOGI(TAG, "unmounted the emulated 1541");
+        return;
+    }
 
     // Take the traps back out so the Kernal behaves exactly as it did before
     // anything was mounted.

@@ -84,7 +84,13 @@ class ExternalCmds {
 
     bool initialized = false;
     bool mounted     = false;
+    bool trueDrive   = false;
     std::string mountedName;
+
+    // The 1541 DOS ROM, read off the card. Kept here so it outlives the CPU
+    // that points at it.
+    uint8_t* driveRom = nullptr;
+    bool loadDriveRom();
 
     void setVarTab(uint16_t addr);
     // Hands control back to the C64 after a load attempt, printing READY or an
@@ -126,6 +132,14 @@ class ExternalCmds {
     // than having a program injected into memory. Returns false if the image
     // cannot be read or the Kernal traps could not be installed.
     bool    mountDisk(const char* filename);
+
+    // Switches drive 8 between the Kernal traps and a real emulated 1541.
+    // The 1541 needs its DOS ROM on the card; without it this returns false
+    // and the traps stay in charge.
+    bool    setTrueDriveEmulation(bool enabled);
+    bool    trueDriveEmulation() const {
+        return trueDrive;
+    }
     void    unmountDisk();
     bool    diskMounted() const {
         return mounted;
