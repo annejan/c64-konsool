@@ -116,8 +116,14 @@ uint8_t CPUC64::getMem(uint16_t addr) {
         else if (addr <= 0xddff) {
             uint8_t ciaidx = (addr - 0xdd00) % 0x10;
             if (ciaidx == 0x00) {
-                uint8_t ddra = cia2.ciaReg[0x02];
-                return cia2.ciaReg[0x00] | ~ddra;
+                uint8_t ddra  = cia2.ciaReg[0x02];
+                // Bits 0 to 5 read back the port; bits 6 and 7 are the serial
+                // bus, and are set when the line is released. Following
+                // Frodo's MOS6526_2::ReadRegister.
+                uint8_t value = static_cast<uint8_t>((cia2.ciaReg[0x00] | ~ddra) & 0x3f);
+                if (!iecLines.clkLow()) value |= 0x40;
+                if (!iecLines.dataLow()) value |= 0x80;
+                return value;
             } else if (ciaidx == 0x01) {
                 uint8_t ddrb = cia2.ciaReg[0x03];
                 return cia2.ciaReg[0x01] | ~ddrb;
@@ -291,9 +297,21 @@ void CPUC64::setMem(uint16_t addr, uint8_t val) {
                         vic->vicmem = 0x0000;
                         break;
                 }
-                cia2.ciaReg[ciaidx] = 0x94 | bank;
+                cia2.ciaReg[ciaidx] = val;
                 // adapt VIC base addresses
                 adaptVICBaseAddrs(true);
+
+                // The same register drives the serial bus. A one written to an
+                // output bit pulls its line low; a bit left as an input drives
+                // nothing.
+                uint8_t driven   = static_cast<uint8_t>(val & cia2.ciaReg[0x02]);
+                bool    atnWas   = iecLines.atnLow();
+                iecLines.c64Atn  = (driven & 0x08) != 0;
+                iecLines.c64Clk  = (driven & 0x10) != 0;
+                iecLines.c64Data = (driven & 0x20) != 0;
+                if (iecLines.atnLow() != atnWas) {
+                    onAtnChanged();
+                }
             } else {
                 cia2.setCommonCIAReg(ciaidx, val);
             }
@@ -314,7 +332,222 @@ uint8_t *CPUC64::getSidRegs() {
     return sidreg;
 }
 
+// Kernal jump table entries for the serial routines. Each holds a JMP to the
+// real routine, so the address to trap is read from the ROM rather than being
+// hardcoded to a particular Kernal revision.
+struct IecTrapVector {
+    uint16_t    jumpTableAddr;
+    const char* name;
+};
+
+static const IecTrapVector kIecTrapVectors[CPUC64::IEC_TRAP_COUNT] = {
+    {0xFFB1, "LISTEN"},  // IEC_TRAP_LISTEN
+    {0xFFB4, "TALK"},    // IEC_TRAP_TALK
+    {0xFF93, "SECOND"},  // IEC_TRAP_SECOND
+    {0xFF96, "TKSA"},    // IEC_TRAP_TKSA
+    {0xFFA8, "CIOUT"},   // IEC_TRAP_CIOUT
+    {0xFFA5, "ACPTR"},   // IEC_TRAP_ACPTR
+    {0xFFAB, "UNTLK"},   // IEC_TRAP_UNTLK
+    {0xFFAE, "UNLSN"},   // IEC_TRAP_UNLSN
+};
+
+// Kernal status byte, and the values the serial routines report through it.
+// Taken from Frodo's IEC.h, which is the reference for what these routines
+// hand back: a write with nobody listening reports $03 rather than just the
+// write timeout bit, and a read past the end reports $02 on its own.
+//
+// Frodo (C) 1994-1997, 2002 Christian Bauer, GPL version 2 or later.
+static const uint16_t KERNAL_STATUS       = 0x90;
+static const uint8_t  STATUS_READ_TIMEOUT = 0x02;  // Frodo ST_READ_TIMEOUT
+static const uint8_t  STATUS_TIMEOUT      = 0x03;  // Frodo ST_TIMEOUT
+static const uint8_t  STATUS_EOI          = 0x40;  // Frodo ST_EOF
+static const uint8_t  STATUS_NOT_PRESENT  = 0x80;  // Frodo ST_NOTPRESENT
+
+static const uint8_t OPCODE_JAM = 0x02;
+static const uint8_t OPCODE_JMP = 0x4C;
+static const uint8_t OPCODE_RTS = 0x60;
+
+bool CPUC64::installIecTraps() {
+    if (iecTrapsActive) return true;
+
+    // Resolve every routine first, so a Kernal that does not look the way we
+    // expect leaves the ROM untouched rather than half patched.
+    uint16_t resolved[IEC_TRAP_COUNT];
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        uint16_t entry = kIecTrapVectors[i].jumpTableAddr;
+        uint16_t off   = entry - 0xE000;
+        if (kernal_rom[off] != OPCODE_JMP) {
+            ESP_LOGE(TAG, "kernal jump table entry for %s is not a JMP", kIecTrapVectors[i].name);
+            return false;
+        }
+        resolved[i] = static_cast<uint16_t>(kernal_rom[off + 1] | (kernal_rom[off + 2] << 8));
+        if (resolved[i] < 0xE000) {
+            ESP_LOGE(TAG, "%s points outside the kernal at $%04x", kIecTrapVectors[i].name, resolved[i]);
+            return false;
+        }
+    }
+
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        iecTrapAddr[i]      = resolved[i];
+        uint16_t off        = resolved[i] - 0xE000;
+        iecTrapSavedByte[i] = kernal_rom[off];
+        kernal_rom[off]     = OPCODE_JAM;
+        ESP_LOGI(TAG, "trapped %s at $%04x", kIecTrapVectors[i].name, resolved[i]);
+    }
+    iecTrapsActive = true;
+    return true;
+}
+
+void CPUC64::removeIecTraps() {
+    if (!iecTrapsActive) return;
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        kernal_rom[iecTrapAddr[i] - 0xE000] = iecTrapSavedByte[i];
+    }
+    iecTrapsActive = false;
+}
+
+// Services one trapped Kernal call. Returns false when the address is not one
+// of ours, which means a real JAM.
+bool CPUC64::handleIecTrap(uint16_t addr) {
+    if (!iecTrapsActive) return false;
+
+    int which = -1;
+    for (int i = 0; i < IEC_TRAP_COUNT; i++) {
+        if (iecTrapAddr[i] == addr) {
+            which = i;
+            break;
+        }
+    }
+    if (which < 0) return false;
+
+    switch (which) {
+        case IEC_TRAP_LISTEN:
+            if (!iecbus.listen(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_TALK:
+            if (!iecbus.talk(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_SECOND:
+            if (!iecbus.second(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_TKSA:
+            if (!iecbus.tksa(a)) ram[KERNAL_STATUS] |= STATUS_NOT_PRESENT;
+            break;
+        case IEC_TRAP_CIOUT:
+            if (!iecbus.ciout(a)) ram[KERNAL_STATUS] |= STATUS_TIMEOUT;
+            break;
+        case IEC_TRAP_ACPTR: {
+            uint8_t value = 0;
+            bool    eoi   = false;
+            if (iecbus.acptr(&value, &eoi)) {
+                a = value;
+                if (eoi) ram[KERNAL_STATUS] |= STATUS_EOI;
+            } else {
+                a                   = 0;
+                ram[KERNAL_STATUS] |= STATUS_READ_TIMEOUT;
+            }
+            // ACPTR leaves the byte in the accumulator, so mirror what a load
+            // would have done to the flags.
+            zflag = (a == 0);
+            nflag = (a & 0x80) != 0;
+            break;
+        }
+        case IEC_TRAP_UNTLK:
+            iecbus.untalk();
+            break;
+        case IEC_TRAP_UNLSN:
+            iecbus.unlisten();
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
+// ATN going low is the drive's cue to look at the bus, so it has to be woken
+// even if it had parked itself.
+bool CPUC64::enableTrueDrive(uint8_t* romImage, DiskImage* image) {
+    if (romImage == nullptr) return false;
+
+    // The traps and the real drive cannot both answer device 8.
+    removeIecTraps();
+
+    drive.setLines(&iecLines);
+    drive.setRom(romImage);
+    drive.setDisk(image);
+    if (!drive.ready()) return false;
+
+    iecLines.reset();
+    drive.reset();
+    driveCycleDebt   = 0;
+    trueDriveEnabled = true;
+    ESP_LOGI(TAG, "true drive emulation on");
+    return true;
+}
+
+void CPUC64::disableTrueDrive() {
+    if (!trueDriveEnabled) return;
+    trueDriveEnabled = false;
+    drive.setDisk(nullptr);
+    iecLines.reset();
+    driveCycleDebt = 0;
+    ESP_LOGI(TAG, "true drive emulation off");
+}
+
+void CPUC64::onAtnChanged() {
+    if (!trueDriveEnabled) return;
+    // The acknowledge gate depends on ATN, so the drive's outputs change the
+    // moment ATN does, without the drive CPU running.
+    drive.refreshIecOutputs();
+}
+
+// Runs the C64 up to `untilCycles` of this rasterline, giving the drive its
+// turn along the way.
+//
+// The 1541 runs at very nearly the same speed as the C64, so it earns a cycle
+// for every cycle the C64 spends. Following Frodo, the two are alternated an
+// instruction at a time rather than a cycle at a time: whichever has fallen
+// behind runs next. That is close enough for loaders that hand bytes back and
+// forth over the bus, and far cheaper than stepping both cycle by cycle.
+void CPUC64::executeUntilCycle(uint8_t untilCycles) {
+    bool withDrive = trueDriveEnabled && drive.ready();
+
+    while (numofcycles < untilCycles) {
+        if (cpuhalted) {
+            break;
+        }
+
+        if (withDrive && driveCycleDebt > 0) {
+            driveCycleDebt -= static_cast<int>(drive.stepInstruction());
+            continue;
+        }
+
+        logDebugInfo();
+        uint8_t before = numofcycles;
+        execute(getMem(pc++));
+
+        if (withDrive) {
+            // The drive owes itself whatever the C64 just spent.
+            driveCycleDebt += static_cast<int>(static_cast<uint8_t>(numofcycles - before));
+        }
+    }
+}
+
+void CPUC64::emulateDriveCycles(unsigned int c64Cycles) {
+    if (!trueDriveEnabled || !drive.ready()) return;
+
+    // Timers keep running even while the drive is parked, so an interrupt it
+    // is waiting on still arrives.
+    drive.countTimers(c64Cycles);
+}
+
 void CPUC64::cmd6502halt() {
+    // The JAM opcode has already been fetched, so the trapped routine starts
+    // one byte back.
+    if (handleIecTrap(pc - 1)) {
+        execute(OPCODE_RTS);
+        return;
+    }
     cpuhalted = true;
     ESP_LOGE(TAG, "illegal code, cpu halted, pc = %x", pc - 1);
 }
@@ -455,25 +688,15 @@ void IRAM_ATTR CPUC64::run() {
         // Do CIA checks half way through the rasterline
         // But not during bad lines
         for (uint8_t i = 0; i < n - 1; i++) {
-            while (numofcycles < sumtmp) {
-                if (cpuhalted) {
-                    break;
-                }
-                logDebugInfo();
-                execute(getMem(pc++));
-            }
+            executeUntilCycle(sumtmp);
             checkciatimers(tmp);
             sumtmp += tmp;
         }
         // Finish the raster line
         tmp = numofcyclestoexe - numofcycles;
-        while (numofcycles < numofcyclestoexe) {
-            if (cpuhalted) {
-                break;
-            }
-            logDebugInfo();
-            execute(getMem(pc++));
-        }
+        executeUntilCycle(numofcyclestoexe);
+
+        emulateDriveCycles(numofcycles);
 
         // Make sure 63 cycles per rasterline on average
         cycles_extra = numofcycles - numofcyclestoexe;

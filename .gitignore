@@ -150,3 +150,11 @@ XUNIT_RESULT*.xml
 
 # Vale
 .vale/styles/*
+
+# host test binary
+main/src/images/test/image_test
+
+main/src/drive/test/dos_test
+main/src/drive/test/gcr_test
+main/src/drive/test/drive_test
+main/src/test/cpu_test

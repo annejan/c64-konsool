@@ -20,6 +20,9 @@
 #include <stdint.h>
 #include "CIA.hpp"
 #include "CPU6502.hpp"
+#include "drive/Drive1541.hpp"
+#include "drive/IecBus.hpp"
+#include "drive/IecLines.hpp"
 #include "Joystick.hpp"
 #include "VIC.hpp"
 #include <cstdint>
@@ -31,6 +34,12 @@ class C64Emu;
 
 class CPUC64 : public CPU6502 {
 private:
+  uint16_t iecTrapAddr[8] = {};
+  uint8_t iecTrapSavedByte[8] = {};
+  bool iecTrapsActive = false;
+  int  driveCycleDebt = 0;
+  bool handleIecTrap(uint16_t addr);
+  void onAtnChanged();
   C64Emu *c64emu;
   uint8_t *ram;
   uint8_t *basicrom;
@@ -102,6 +111,45 @@ public:
 
   void cmd6502halt() override;
   void run() override;
+
+  // Serial bus, and the Kernal routines we stand in for.
+  //
+  // There is no IEC hardware in this emulator, so instead the Kernal's own
+  // serial routines are replaced: each one gets a JAM opcode patched over its
+  // first byte, and cmd6502halt() picks the call up from there. The addresses
+  // come from the Kernal jump table rather than being hardcoded.
+  IecBus iecbus;
+
+  // The real drive, and the bus lines it shares with CIA 2. When the drive is
+  // not running these lines simply stay released, which is what an empty bus
+  // looks like.
+  IecLines  iecLines;
+  Drive1541 drive;
+  bool      trueDriveEnabled = false;
+
+  // Steps the drive alongside the C64 for one rasterline's worth of cycles.
+  void emulateDriveCycles(unsigned int c64Cycles);
+  void executeUntilCycle(uint8_t untilCycles);
+  enum IecTrap {
+    IEC_TRAP_LISTEN = 0,
+    IEC_TRAP_TALK,
+    IEC_TRAP_SECOND,
+    IEC_TRAP_TKSA,
+    IEC_TRAP_CIOUT,
+    IEC_TRAP_ACPTR,
+    IEC_TRAP_UNTLK,
+    IEC_TRAP_UNLSN,
+    IEC_TRAP_COUNT
+  };
+  // Turns the real drive on. `romImage` must be Drive1541::ROM_SIZE bytes and
+  // outlive the CPU. Returns false when there is no usable ROM.
+  bool enableTrueDrive(uint8_t* romImage, DiskImage* image);
+  void disableTrueDrive();
+  bool trueDriveActive() const { return trueDriveEnabled && drive.ready(); }
+
+  bool installIecTraps();
+  void removeIecTraps();
+  bool iecTrapsInstalled() const { return iecTrapsActive; }
 
   void initMemAndRegs();
   void init(uint8_t *ram, uint8_t *charrom, VIC *vic, C64Emu *c64emu);

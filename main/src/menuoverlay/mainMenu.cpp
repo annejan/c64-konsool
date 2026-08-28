@@ -1,4 +1,5 @@
 #include "MainMenu.hpp"
+#include "Config.hpp"
 #include "C64Emu.hpp"
 #include "LoadMenu.hpp"
 #include "MenuDataStore.hpp"
@@ -58,7 +59,7 @@ void MainMenu::exitToLauncher(MenuItem* item)
 bool MainMenu::init()
 {
     int id_count = 1;
-    loadMenu     = new LoadMenu("Load PRG file from SD card (c64prg folder)", this, menuController);
+    loadMenu     = new LoadMenu("Load file from SD card (c64prg folder)", this, menuController);
     loadMenu->init();
     usbLoadMenu = new UsbLoadMenu("Load PRG file from USB disk (disk root)", this, menuController);
     usbLoadMenu->init();
@@ -68,7 +69,7 @@ bool MainMenu::init()
     // Setup the menu entries
     MenuItem* load_prg = new MenuItem();
     load_prg->id       = id_count++;
-    load_prg->title    = "Load PRG file from SD card (c64prg folder)";
+    load_prg->title    = "Load file from SD card (c64prg folder)";
     load_prg->type     = MenuItemType::SUBMENU;
     load_prg->submenu  = loadMenu;
     items.push_back(*load_prg);
@@ -95,6 +96,31 @@ bool MainMenu::init()
         ESP_LOGI("MainMenu", "Switched to joystick port %d", port);
     };
     items.push_back(*joystick_port);
+
+    // True drive emulation. Needs the 1541 ROM on the card, so the toggle
+    // reports back if it could not be turned on.
+    MenuItem* true_drive   = new MenuItem();
+    true_drive->id         = id_count++;
+    true_drive->title      = "1541 emulation: ";
+    true_drive->type       = MenuItemType::TOGGLE;
+    true_drive->value_name = "true_drive_ena";
+    menuDataStore->set("true_drive_ena", false);
+    true_drive->action     = [this, menuDataStore](MenuItem* item) {
+        (void)item;
+        bool wanted = menuDataStore->getBool("true_drive_ena", false);
+        bool got    = this->c64emu->externalCmds.setTrueDriveEmulation(wanted);
+        if (wanted && !got) {
+            ESP_LOGE("MainMenu", "no " DRIVE_ROM_FILENAME " on the card");
+            menuDataStore->set("true_drive_ena", false);
+        }
+    };
+    items.push_back(*true_drive);
+
+    // Separator
+    MenuItem* sep1 = new MenuItem();
+    sep1->id       = id_count++;
+    sep1->type     = MenuItemType::SPACER;
+    items.push_back(*sep1);
 
     // Add menu items here
     MenuItem* joystick_emu   = new MenuItem();

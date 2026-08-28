@@ -22,6 +22,7 @@
 #include <vector>
 #include "driver/sdmmc_default_configs.h"
 #include "driver/sdmmc_host.h"
+#include "images/CbmImage.hpp"
 
 class SDCard {
    private:
@@ -36,6 +37,10 @@ class SDCard {
     uint16_t                 load(const char* path, uint8_t* ram, size_t len = 0);
     uint16_t                 load_auto(const char* path, uint8_t* ram, size_t len = 0);
     bool                     save(const char* path, const uint8_t* ram, size_t len = 0);
+    // Lists the loadable files in `path` one page at a time. Names keep their
+    // extension so the caller can tell a program from a container.
     std::vector<std::string> listPagedEntries(const char* path, size_t page, size_t pageSize);
     bool                     listNextEntry(uint8_t* nextEntry, size_t entrySize, bool start);
+    // Builds the full path of a file in the program directory.
+    static std::string       fullPath(const char* filename);
 };
