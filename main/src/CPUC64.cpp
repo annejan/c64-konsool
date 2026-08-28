@@ -18,7 +18,11 @@
 #include <esp_log.h>
 #include <esp_random.h>
 #include <cstdint>
+#if defined(HOST_BUILD)
+#include "HostC64Emu.hpp"
+#else
 #include "C64Emu.hpp"
+#endif
 #include "JoystickInitializationException.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -219,6 +223,51 @@ void CPUC64::adaptVICBaseAddrs(bool fromcia) {
     }
 }
 
+void CPUC64::applyCia2PortA() {
+    uint8_t val  = cia2.ciaReg[0x00];
+    uint8_t ddra = cia2.ciaReg[0x02];
+
+    // Bits 0 and 1 pick the VIC bank, and they follow the port pins rather
+    // than the latch: a bit left as an input floats high and reads as one
+    // whatever was written to it. A fast loader bit-bangs this register
+    // thousands of times a second and does not preserve those bits, precisely
+    // because it has left them as inputs. Spindle sets the data direction to
+    // $3c, so on real hardware the bank never moves; taking it from the
+    // written value alone put the VIC on a different 16K on every handshake,
+    // and it drew its bitmap, screen and charset out of whatever was there.
+    uint8_t bank = static_cast<uint8_t>(val | ~ddra) & 3;
+    switch (bank) {
+        case 0:
+            vic->vicmem = 0xc000;
+            break;
+        case 1:
+            vic->vicmem = 0x8000;
+            break;
+        case 2:
+            vic->vicmem = 0x4000;
+            break;
+        case 3:
+            vic->vicmem = 0x0000;
+            break;
+    }
+    adaptVICBaseAddrs(true);
+
+    // The same register drives the serial bus, through inverting buffers. A
+    // line is released only by driving its bit with a zero: a one pulls the
+    // line low, and so does leaving the bit as an input, because the pin then
+    // floats high through its pull up and the inverter turns that into a
+    // pulled down line. Frodo builds the same value as "~pra & ddra", a set
+    // bit meaning the line is high (src/CIA.cpp, write_pa).
+    uint8_t released = static_cast<uint8_t>(~val & ddra);
+    bool    atnWas   = iecLines.atnLow();
+    iecLines.c64Atn  = (released & 0x08) == 0;
+    iecLines.c64Clk  = (released & 0x10) == 0;
+    iecLines.c64Data = (released & 0x20) == 0;
+    if (iecLines.atnLow() != atnWas) {
+        onAtnChanged();
+    }
+}
+
 void CPUC64::setMem(uint16_t addr, uint8_t val) {
     if (bankDIO && (addr >= 0xd000) && (addr <= 0xdfff)) {
         // ** VIC **
@@ -282,47 +331,18 @@ void CPUC64::setMem(uint16_t addr, uint8_t val) {
         else if (addr <= 0xddff) {
             uint8_t ciaidx = (addr - 0xdd00) % 0x10;
             if (ciaidx == 0x00) {
-                // Bits 0 and 1 pick the VIC bank, and they follow the port
-                // pins rather than the latch: a bit left as an input floats
-                // high and reads as one whatever was written to it. A fast
-                // loader bit-bangs this register thousands of times a second
-                // and does not preserve those bits, precisely because it has
-                // left them as inputs. Spindle sets the data direction to
-                // $3c, so on real hardware the bank never moves; taking it
-                // from the written value alone put the VIC on a different 16K
-                // on every handshake, and it drew its bitmap, screen and
-                // charset out of whatever happened to be there.
-                uint8_t ddra = cia2.ciaReg[0x02];
-                uint8_t bank = static_cast<uint8_t>(val | ~ddra) & 3;
-                switch (bank) {
-                    case 0:
-                        vic->vicmem = 0xc000;
-                        break;
-                    case 1:
-                        vic->vicmem = 0x8000;
-                        break;
-                    case 2:
-                        vic->vicmem = 0x4000;
-                        break;
-                    case 3:
-                        vic->vicmem = 0x0000;
-                        break;
-                }
                 cia2.ciaReg[ciaidx] = val;
-                // adapt VIC base addresses
-                adaptVICBaseAddrs(true);
-
-                // The same register drives the serial bus. A one written to an
-                // output bit pulls its line low; a bit left as an input drives
-                // nothing.
-                uint8_t driven   = static_cast<uint8_t>(val & ddra);
-                bool    atnWas   = iecLines.atnLow();
-                iecLines.c64Atn  = (driven & 0x08) != 0;
-                iecLines.c64Clk  = (driven & 0x10) != 0;
-                iecLines.c64Data = (driven & 0x20) != 0;
-                if (iecLines.atnLow() != atnWas) {
-                    onAtnChanged();
-                }
+                applyCia2PortA();
+            } else if (ciaidx == 0x02) {
+                // The data direction decides which of the port's bits actually
+                // drive the serial bus, and which of the VIC bank bits float
+                // high, so both have to be recomputed when it changes and not
+                // only when the port itself is written. A loader that turns ATN
+                // into an output while the latch bit is already set asserts ATN
+                // by writing here alone, and without this the drive never sees
+                // the edge it is waiting for.
+                cia2.setCommonCIAReg(ciaidx, val);
+                applyCia2PortA();
             } else {
                 cia2.setCommonCIAReg(ciaidx, val);
             }

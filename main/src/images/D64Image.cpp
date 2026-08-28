@@ -45,28 +45,46 @@ bool D64Image::open(const char* path)
             const uint8_t* e    = buf + slot * SLOT_SIZE;
             uint8_t        type = e[SLOT_TYPE];
 
-            if ((type & FT_MASK) != FT_PRG) continue;  // only PRG can be loaded
+            // The DOS lists every slot whose type byte is not zero, and a
+            // disk draws its title box with scratched slots, so dropping
+            // everything that is not a PRG threw the artwork away before it
+            // could be shown. Keep those rows, but only a PRG can be loaded.
+            if (type == 0) continue;
+            bool loadable = (type & FT_MASK) == FT_PRG;
 
             unsigned int ft = e[SLOT_FIRST_TRACK];
             unsigned int fs = e[SLOT_FIRST_SECTOR];
-            if (ft < 1 || ft > disk.tracks()) continue;
-            if (fs >= disk.sectorsPerTrack(ft)) continue;
+            if (loadable && (ft < 1 || ft > disk.tracks())) continue;
+            if (loadable && fs >= disk.sectorsPerTrack(ft)) continue;
 
             Entry entry;
             entry.track  = static_cast<uint8_t>(ft);
             entry.sector = static_cast<uint8_t>(fs);
 
             ImageEntry item;
-            item.name   = petsciiToDisplay(e + SLOT_NAME, SLOT_NAME_LEN);
-            item.index  = static_cast<uint16_t>(dirEntries.size());
-            item.blocks = static_cast<uint16_t>(e[SLOT_NR_BLOCKS] | (e[SLOT_NR_BLOCKS + 1] << 8));
+            item.loadable = loadable;
+            item.name = petsciiToDisplay(e + SLOT_NAME, SLOT_NAME_LEN);
+            // Keep the bytes as they were as well. A directory is full of
+            // graphics characters, and only the original bytes can be drawn
+            // with the C64's own charset.
+            item.petscii = petsciiRaw(e + SLOT_NAME, SLOT_NAME_LEN);
+            item.index   = static_cast<uint16_t>(dirEntries.size());
+            item.blocks  = static_cast<uint16_t>(e[SLOT_NR_BLOCKS] | (e[SLOT_NR_BLOCKS + 1] << 8));
             if (item.name.empty()) item.name = "(unnamed)";
             // An unclosed "splat" file was never written completely. Show it,
             // marked the way a C64 directory listing marks it, but expect the
             // sector chain to be broken.
-            if (!(type & FT_CLOSED)) item.name += "*";
+            if (!(type & FT_CLOSED)) {
+                item.name += "*";
+                if (!item.petscii.empty()) item.petscii += '*';
+            }
 
-            dirEntries.push_back(entry);
+            if (loadable) {
+                dirEntries.push_back(entry);
+            } else {
+                // Nothing to extract, so it must not claim a sector chain.
+                item.index = 0xFFFF;
+            }
             imageEntries.push_back(item);
         }
 

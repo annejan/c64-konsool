@@ -132,6 +132,7 @@ static void testT64Basic()
     CHECK(img.entries().size() == 2, "expected 2 entries, got %zu", img.entries().size());
     CHECK(img.entries()[0].name == "HELLO", "name was '%s'", img.entries()[0].name.c_str());
     CHECK(img.entries()[1].name == "SECOND", "name was '%s'", img.entries()[1].name.c_str());
+    CHECK(img.entries()[0].petscii == "HELLO", "raw name was '%s'", img.entries()[0].petscii.c_str());
 
     std::vector<uint8_t> ram(C64_RAM_SIZE, 0);
     uint16_t             end = 0;
@@ -436,6 +437,8 @@ static void testD64SplatAndRejects()
     CHECK(img.open(path.c_str()), "open failed");
     CHECK(img.entries().size() == 1, "expected the splat file to be listed");
     CHECK(img.entries()[0].name == "OPENFILE*", "splat marker missing, got '%s'", img.entries()[0].name.c_str());
+    CHECK(img.entries()[0].petscii == "OPENFILE*", "raw name not kept, got '%s'",
+          img.entries()[0].petscii.c_str());
 
     // wrong size is not a d64
     std::vector<uint8_t> junk(1000, 0);
@@ -516,17 +519,99 @@ static void testPetsciiNames()
     memcpy(tape, "TAPE FILE", 9);
     CHECK(petsciiToDisplay(tape, 16) == "TAPE FILE", "tape padding not stripped");
 
-    uint8_t shifted[4] = {0xC1, 0xC2, 0xC3, 0xA0};
-    CHECK(petsciiToDisplay(shifted, 4) == "ABC", "shifted letters not mapped");
+    // $c1-$c3 are SHIFT+A/B/C: a spade and the two line segments a disk draws
+    // its title box from. They are graphics in the charset a directory is
+    // listed in, so they must not come back as the letters A, B and C.
+    uint8_t art[4] = {0xC1, 0xC2, 0xC3, 0xA0};
+    CHECK(petsciiToDisplay(art, 4) == "#|-", "directory art mapped to letters");
+
+    // A real title box, as drawn on kloten.d64.
+    uint8_t box[16] = {0xD5, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3,
+                       0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC9};
+    CHECK(petsciiToDisplay(box, 16) == "+--------------+", "title box not drawn as a box");
 
     uint8_t control[3] = {0x01, 0x93, 0x41};
     CHECK(petsciiToDisplay(control, 3) == "__A", "control codes not sanitised");
+}
+
+static void testPetsciiScreenCodes()
+{
+    printf("PETSCII to screen code\n");
+
+    // The title box from kloten.d64: SHIFT+U, fourteen SHIFT+C, SHIFT+I, which
+    // is a rounded corner, a rule and a rounded corner. In the unshifted
+    // charset those are screen codes $55, $43 and $49. Folding the $c0 block
+    // onto the letters (the old bug) would give $15, $03, $09 instead.
+    uint8_t box[16]   = {0xD5, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3,
+                         0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC9};
+    bool    boxCodes  = true;
+    for (int i = 0; i < 16; i++) {
+        uint8_t want = (i == 0) ? 0x55 : (i == 15 ? 0x49 : 0x43);
+        if (petsciiToScreenCode(box[i]) != want) boxCodes = false;
+    }
+    CHECK(boxCodes, "the kloten.d64 title box does not map to $55 $43.. $49");
+
+    // The row below it, "| DEFEEST AT |": SHIFT+B is the vertical rule, and
+    // the letters keep their places in the screen code table.
+    uint8_t row[6]    = {0xC2, 0x20, 0x44, 0x45, 0x46, 0xC2};
+    bool    rowCodes  = petsciiToScreenCode(row[0]) == 0x42 && petsciiToScreenCode(row[1]) == 0x20 &&
+                       petsciiToScreenCode(row[2]) == 0x04 && petsciiToScreenCode(row[3]) == 0x05 &&
+                       petsciiToScreenCode(row[4]) == 0x06 && petsciiToScreenCode(row[5]) == 0x42;
+    CHECK(rowCodes, "letters and the vertical rule do not map to their screen codes");
+
+    // The two blocks that repeat lower down, and the shifted space.
+    CHECK(petsciiToScreenCode(0x40) == 0x00, "$40 is screen code $00");
+    CHECK(petsciiToScreenCode(0x5A) == 0x1A, "$5a is screen code $1a");
+    CHECK(petsciiToScreenCode(0x60) == 0x40, "$60 is screen code $40");
+    CHECK(petsciiToScreenCode(0x7F) == 0x5F, "$7f is screen code $5f");
+    CHECK(petsciiToScreenCode(0xA0) == 0x60, "the shifted space is screen code $60");
+    CHECK(petsciiToScreenCode(0xBF) == 0x7F, "$bf is screen code $7f");
+    CHECK(petsciiToScreenCode(0xDF) == 0x5F, "$df repeats $7f");
+    CHECK(petsciiToScreenCode(0xE0) == 0x60, "$e0 repeats $a0");
+    CHECK(petsciiToScreenCode(0xFF) == 0x7F, "$ff repeats $bf");
+
+    // Nothing in the map may point past the unshifted half of the ROM, or a
+    // name would draw whatever happens to follow it.
+    bool inRange = true;
+    for (int c = 0; c <= 0xFF; c++) {
+        if (petsciiToScreenCode(static_cast<uint8_t>(c)) > 0x7F) inRange = false;
+    }
+    CHECK(inRange, "a screen code landed outside the unshifted charset");
+
+    // Control codes have no glyph. A name must not be able to draw one.
+    CHECK(petsciiToScreenCode(0x00) == 0x20, "$00 is not blank");
+    CHECK(petsciiToScreenCode(0x1F) == 0x20, "$1f is not blank");
+    CHECK(petsciiToScreenCode(0x80) == 0x20, "$80 is not blank");
+    CHECK(petsciiToScreenCode(0x93) == 0x20, "clear screen is not blank");
+    CHECK(petsciiToScreenCode(0x9F) == 0x20, "$9f is not blank");
+}
+
+static void testPetsciiRaw()
+{
+    printf("PETSCII kept as it was\n");
+
+    uint8_t box[16] = {0xD5, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3,
+                       0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC9};
+    std::string raw = petsciiRaw(box, 16);
+    CHECK(raw.size() == 16, "raw name lost characters, got %zu", raw.size());
+    CHECK(static_cast<uint8_t>(raw[0]) == 0xD5 && static_cast<uint8_t>(raw[15]) == 0xC9,
+          "raw name was converted after all");
+
+    // Padding goes, but only the trailing run: a $A0 inside a name is a
+    // shifted space somebody drew with.
+    uint8_t padded[16] = {0xC2, 0xA0, 0x41, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0,
+                          0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0};
+    std::string trimmed = petsciiRaw(padded, 16);
+    CHECK(trimmed.size() == 3, "trailing padding not stripped, got %zu", trimmed.size());
+    CHECK(static_cast<uint8_t>(trimmed[1]) == 0xA0, "an interior shifted space was eaten");
 }
 
 int main()
 {
     testFormatDetection();
     testPetsciiNames();
+    testPetsciiScreenCodes();
+    testPetsciiRaw();
     testT64Basic();
     testT64BadEndAddress();
     testT64ZeroCounters();

@@ -45,6 +45,17 @@ They also run in CI on every pull request.
 
 ## Driving the emulator from the host
 
+The harnesses built for this live in `~/Projects/c64-konsool-harness`, with a
+README naming each one. They are kept out of `/tmp`, which a reboot wipes, and
+out of the repo, since they are scratch. `kernal_probe.cpp` is the one to
+reach for first.
+
+**Test against real disks, not generated ones.** A sync bug hid for hours
+because the .d64 generated here contains no byte aligned `$ff` at all, so every
+host test passed while every real disk failed. `harness/disks/` holds real
+ones.
+
+
 Anything that goes wrong between the C64 and the drive can be reproduced on a
 normal machine, which is far faster than reflashing to try an idea. Both sides
 are plain C++ with no ESP-IDF in them, so a small harness can compile

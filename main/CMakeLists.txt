@@ -28,6 +28,7 @@ idf_component_register(
 		"src/menuoverlay/UsbLoadMenu.cpp"
 		"src/menuoverlay/ImageMenu.cpp"
 		"src/menuoverlay/MenuDataStore.cpp"
+		"src/menuoverlay/PetsciiText.cpp"
 		"src/sid/sid.cpp"
 		"src/sid/i2s.cpp"
 		"sdcard.c"

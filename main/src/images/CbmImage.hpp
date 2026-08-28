@@ -37,14 +37,26 @@ ImageFormat imageFormatFromName(const std::string& filename);
 
 // One loadable program inside a container.
 struct ImageEntry {
-    std::string name;    // display name, converted from PETSCII
-    uint16_t    index;   // pass back to extract()
-    uint16_t    blocks;  // size in 254 byte blocks, for display
+    std::string name;     // display name, converted from PETSCII
+    std::string petscii;  // the name as it was on the disk, for the C64 charset
+    uint16_t    index;    // pass back to extract(), only meaningful when loadable
+    uint16_t    blocks;   // size in 254 byte blocks, for display
+    bool        loadable; // a PRG can be loaded; other slots are shown but inert
 };
 
 // Converts a PETSCII file name field to something printable, dropping the
 // trailing padding ($20 on tape, $A0 on disk).
 std::string petsciiToDisplay(const uint8_t* petscii, size_t len);
+
+// The same field with the bytes left alone, only the trailing padding taken
+// off. Anything that can draw the C64 charset wants this rather than the
+// ASCII stand-ins petsciiToDisplay() produces.
+std::string petsciiRaw(const uint8_t* petscii, size_t len);
+
+// Turns a PETSCII byte into the screen code that indexes the unshifted half
+// of the character ROM, which is the charset a directory is listed in.
+// Control codes have no glyph and come back as a space.
+uint8_t petsciiToScreenCode(uint8_t c);
 
 // Common interface for the container readers. A reader keeps the image file
 // open between open() and close() so entries can be extracted on demand.

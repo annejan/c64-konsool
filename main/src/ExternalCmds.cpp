@@ -20,6 +20,7 @@
 #include <cstring>
 #include <sys/unistd.h>
 #include "C64Emu.hpp"
+#include "menuoverlay/MenuDataStore.hpp"
 #include "Config.hpp"
 #include "listactions.h"
 #include "loadactions.h"
@@ -189,6 +190,16 @@ bool ExternalCmds::loadImageEntry(const char* filename, uint16_t index) {
 
 bool ExternalCmds::loadImageEntryFromPath(const char* fullpath, uint16_t index) {
     ESP_LOGI(TAG, "load entry %u of %s", static_cast<unsigned>(index), fullpath);
+
+    // Taking a program off a disk is not the same as being handed a .prg: the
+    // program usually expects that disk to still be in the drive, because the
+    // next part comes off it. Leave it mounted, which also brings the 1541 on
+    // when its ROM is on the card. Do this before the CPU is halted below,
+    // since mounting halts and releases it in its own right.
+    if (imageFormatFromName(fullpath) == ImageFormat::D64) {
+        mountDiskFromPath(fullpath);
+    }
+
     c64emu->cpu.cpuhalted = true;
 
     T64Image  t64;
@@ -300,6 +311,18 @@ bool ExternalCmds::mountDisk(const char* filename) {
 
 bool ExternalCmds::mountDiskFromPath(const char* fullpath) {
     unmountDisk();
+
+    // Putting a disk in is the moment to switch the real drive on. Anything
+    // that loads more than one part needs it, and having to remember a menu
+    // toggle every time is a good way to conclude the disk is broken. This
+    // only happens when the ROM is actually on the card, so a card without one
+    // behaves exactly as before, and the toggle still switches it back off.
+    if (!trueDrive && loadDriveRom()) {
+        if (setTrueDriveEmulation(true)) {
+            MenuDataStore::getInstance()->set("true_drive_ena", true);
+            ESP_LOGI(TAG, "1541 emulation switched on for this disk");
+        }
+    }
 
     if (imageFormatFromName(fullpath) != ImageFormat::D64) {
         ESP_LOGE(TAG, "%s is not a disk image", fullpath);

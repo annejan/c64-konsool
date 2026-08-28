@@ -1,0 +1,3 @@
+# Build output of the host build; the sources next to it are what matters.
+*.o
+c64host

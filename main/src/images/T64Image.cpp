@@ -128,9 +128,12 @@ bool T64Image::open(const char* path)
         if (r.offset >= static_cast<uint32_t>(fileSize)) continue;
 
         ImageEntry entry;
-        entry.name   = petsciiToDisplay(rec + T64_REC_FILENAME, T64_REC_NAME_LEN);
-        entry.index  = static_cast<uint16_t>(records.size());
-        entry.blocks = 0;
+        entry.loadable = true;  // every record in a tape image can be extracted
+        entry.name = petsciiToDisplay(rec + T64_REC_FILENAME, T64_REC_NAME_LEN);
+        // Keep the original bytes so the name can be drawn in the C64 charset.
+        entry.petscii = petsciiRaw(rec + T64_REC_FILENAME, T64_REC_NAME_LEN);
+        entry.index   = static_cast<uint16_t>(records.size());
+        entry.blocks  = 0;
         if (entry.name.empty()) entry.name = "(unnamed)";
 
         records.push_back(r);

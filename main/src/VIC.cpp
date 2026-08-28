@@ -24,7 +24,15 @@
 
 static const uint16_t* tftColorFromC64ColorArr;
 
-static bool collArr[4] = {false, true, true, true};
+// Which multicolour bit pairs count as foreground, for sprite priority and for
+// sprite-to-background collision. In the multicolour modes 00 and 01 both
+// belong to the background; only 10 and 11 are foreground. Frodo builds the
+// same mask by keeping the high bit of each pair and spreading it across the
+// two pixels: "(data & 0xaa) | (data & 0xaa) >> 1" (src/VIC.cpp, el_mc_text
+// and el_mc_bitmap). Calling 01 foreground hides sprites behind what should be
+// background, and only in multicolour areas -- hires tests the bit itself and
+// was never wrong.
+static bool collArr[4] = {false, false, true, true};
 
 VIC::VIC()
 {
@@ -527,13 +535,14 @@ uint8_t VIC::spriteDmaCycles()
 
     uint8_t spritesdoubley = vicreg[0x17];
     uint8_t spritesenabled = vicreg[0x15];
-    uint8_t deltay = vicreg[0x11] & 7;
     bool    den    = vicreg[0x11] & 16;  // Display enable
     uint8_t bitval         = 128;
     uint8_t steal_cycles   = 0;
 
+    // Sprites are positioned against the raster line itself. YSCROLL scrolls the
+    // character display and nothing else, so it must not enter this comparison.
     // Only 8 bit for line comparison, so sprites repeat if placed in extremes of the screen
-    uint8_t line = rasterline + deltay - 3;
+    uint8_t line = rasterline;
 
     // No sprite DMA when display is disabled
     if (!den) {
@@ -783,7 +792,7 @@ void IRAM_ATTR VIC::drawRasterline()
                 drawExtBGColCharMode(ram + screenmemstart, bgColArr, dline, deltay - 3, deltax);
             }
         }
-        drawSprites(rasterline + deltay - 3);
+        drawSprites(rasterline);
     }
 
     if ((rasterline >= 16) && (rasterline <= 276)) {

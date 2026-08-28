@@ -23,9 +23,15 @@ ImageFormat imageFormatFromName(const std::string& filename)
 // control characters into the menu.
 static char petToAscii(uint8_t c)
 {
-    // The shifted charset repeats the letters at $c1-$da.
-    if (c >= 0xC1 && c <= 0xDA) {
-        c = static_cast<uint8_t>(c - 0x80);
+    // PETSCII repeats its graphics rather than its letters: $c0-$df draws the
+    // same shapes as $60-$7f, and $e0-$ff the same as $a0-$bf. A directory is
+    // listed in the unshifted charset, where $c3 is SHIFT+C, a horizontal
+    // rule, and not the letter C. Folding these onto $41-$5a is what turned
+    // the box a disk draws around its title into a row of capitals.
+    if (c >= 0xC0 && c <= 0xDF) {
+        c = static_cast<uint8_t>(c - 0x60);
+    } else if (c >= 0xE0) {
+        c = static_cast<uint8_t>(c - 0x40);
     }
     if (c >= 0x41 && c <= 0x5A) return static_cast<char>(c);  // A-Z
     if (c >= 0x20 && c <= 0x40) return static_cast<char>(c);  // space, digits, punctuation
@@ -35,6 +41,11 @@ static char petToAscii(uint8_t c)
     // do something to the screen, so keep it obvious rather than dressing it
     // up as a graphic.
     if (c < 0x20 || (c >= 0x80 && c <= 0x9F)) return '_';
+
+    // $a0 is the shifted space, which draws as a blank, and the rest of that
+    // block is the solid and shaded blocks.
+    if (c == 0xA0) return ' ';
+    if (c >= 0xA1 && c <= 0xBF) return '#';
 
     // Disk names and directory art lean on the block graphics, and turning all
     // of them into the same character makes a border look like a mistake.
@@ -53,9 +64,11 @@ static char petToAscii(uint8_t c)
         case 0x65:
         case 0x67:
         case 0x74:
-        case 0x75:
             return '|';
-        case 0x6B:  // corners and junctions
+        case 0x69:  // corners and junctions, including the rounded ones that
+        case 0x6A:  // SHIFT+I/J/K/U draw around a directory title
+        case 0x6B:
+        case 0x75:
         case 0x6C:
         case 0x6E:
         case 0x6F:
@@ -68,14 +81,11 @@ static char petToAscii(uint8_t c)
             return '+';
         case 0x61:  // solid and shaded blocks
         case 0x66:
-        case 0x69:
-        case 0x6A:
         case 0x76:
         case 0x79:
         case 0x7C:
         case 0x7E:
         case 0x7F:
-        case 0xA0:
             return '#';
         default:
             break;
@@ -84,12 +94,43 @@ static char petToAscii(uint8_t c)
 }
 
 
-std::string petsciiToDisplay(const uint8_t* petscii, size_t len)
+// Tape records pad with $20, disk directory slots pad with $A0, and a slot
+// that was never written is left at $00. Only the trailing run goes: a $A0 in
+// the middle of a name is a shifted space somebody drew with.
+static size_t petsciiTrim(const uint8_t* petscii, size_t len)
 {
-    // Tape records pad with $20, disk directory slots pad with $A0.
     while (len > 0 && (petscii[len - 1] == 0xA0 || petscii[len - 1] == 0x20 || petscii[len - 1] == 0x00)) {
         len--;
     }
+    return len;
+}
+
+
+// PETSCII repeats its graphics rather than its letters, so the two upper
+// blocks fold back onto $40-$7f. See petToAscii() above for why that matters.
+uint8_t petsciiToScreenCode(uint8_t c)
+{
+    if (c < 0x20) return 0x20;                              // control code, no glyph
+    if (c < 0x40) return c;                                 // space, digits, punctuation
+    if (c < 0x60) return static_cast<uint8_t>(c - 0x40);    // @ A-Z [ ]
+    if (c < 0x80) return static_cast<uint8_t>(c - 0x20);    // the graphics block
+    if (c < 0xA0) return 0x20;                              // control code, no glyph
+    if (c < 0xC0) return static_cast<uint8_t>(c - 0x40);    // shifted space and the blocks
+    if (c < 0xE0) return static_cast<uint8_t>(c - 0x80);    // repeat of $60-$7f
+    return static_cast<uint8_t>(c - 0x80);                  // repeat of $a0-$bf
+}
+
+
+std::string petsciiRaw(const uint8_t* petscii, size_t len)
+{
+    len = petsciiTrim(petscii, len);
+    return std::string(reinterpret_cast<const char*>(petscii), len);
+}
+
+
+std::string petsciiToDisplay(const uint8_t* petscii, size_t len)
+{
+    len = petsciiTrim(petscii, len);
     std::string out;
     out.reserve(len);
     for (size_t i = 0; i < len; i++) {
