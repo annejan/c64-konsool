@@ -36,40 +36,60 @@ bool ImageMenu::openImage(const std::string& filename)
     nextPage    = 0;
 
     ImageFormat format = imageFormatFromName(filename);
-    T64Image    t64;
-    D64Image    d64;
-    CbmImage*   image = nullptr;
+    isDisk             = (format == ImageFormat::D64);
+    T64Image  t64;
+    D64Image  d64;
+    CbmImage* image = nullptr;
     if (format == ImageFormat::T64) {
         image = &t64;
     } else if (format == ImageFormat::D64) {
         image = &d64;
     } else {
         ESP_LOGE(TAG, "%s is not a container", filename.c_str());
-        return false;
     }
 
-    std::string path = SDCard::fullPath(filename.c_str());
-    if (!image->open(path.c_str())) {
-        ESP_LOGE(TAG, "cannot read %s", path.c_str());
-        return false;
+    bool ok = false;
+    if (image != nullptr) {
+        std::string path = SDCard::fullPath(filename.c_str());
+        if (image->open(path.c_str())) {
+            // Copy the directory out so the image file does not have to stay
+            // open while the user is browsing.
+            imageEntries = image->entries();
+            image->close();
+            ok = !imageEntries.empty();
+            ESP_LOGI(TAG, "%s holds %zu programs", filename.c_str(), imageEntries.size());
+        } else {
+            ESP_LOGE(TAG, "cannot read %s", path.c_str());
+        }
     }
 
-    // Copy the directory out so the image file does not have to stay open
-    // while the user is browsing.
-    imageEntries = image->entries();
-    image->close();
-
-    ESP_LOGI(TAG, "%s holds %zu programs", filename.c_str(), imageEntries.size());
-
+    // Rebuild either way. Leaving the previous image's entries on screen after
+    // a failed open would let the wrong program be picked, and a disk with
+    // nothing extractable on it can still be mounted.
     title = filename;
     displayMenu();
     navigateBegin();
-    return !imageEntries.empty();
+    return ok;
 }
 
 void ImageMenu::displayMenu()
 {
     items.clear();
+
+    // A disk can be handed to the C64 whole, so it can LOAD from it the way it
+    // would from a real drive. That is the only route that works for anything
+    // that loads more than one part.
+    if (isDisk && currentPage == 0) {
+        MenuItem mountItem = MenuItem();
+        mountItem.id       = 0xfffd;
+        mountItem.title    = "=== Mount as drive 8 ===";
+        mountItem.type     = MenuItemType::ACTION;
+        mountItem.action   = [this](MenuItem* item) {
+            (void)item;
+            this->mountDisk();
+        };
+        items.push_back(mountItem);
+    }
 
     if (currentPage != 0) {
         MenuItem prevPageItem = MenuItem();
@@ -149,6 +169,22 @@ void ImageMenu::loadEntry(uint16_t index)
     vTaskDelay(3000 / portTICK_PERIOD_MS);
     ext->loadImageEntry(imageName.c_str(), index);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
+    menuController->hide();
+}
+
+void ImageMenu::mountDisk()
+{
+    ExternalCmds* ext = &c64emu->externalCmds;
+
+    // Reset first so the Kernal starts clean with the drive already attached.
+    ext->reset();
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    if (ext->mountDisk(imageName.c_str())) {
+        ESP_LOGI(TAG, "%s mounted as drive 8", imageName.c_str());
+    } else {
+        ESP_LOGE(TAG, "could not mount %s", imageName.c_str());
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
     menuController->hide();
 }
 

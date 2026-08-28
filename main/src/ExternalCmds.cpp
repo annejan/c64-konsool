@@ -224,6 +224,65 @@ bool ExternalCmds::loadImageEntry(const char* filename, uint16_t index) {
     return fileloaded;
 }
 
+bool ExternalCmds::mountDisk(const char* filename) {
+    unmountDisk();
+
+    if (!sdcard.init()) {
+        ESP_LOGE(TAG, "error init sdcard");
+        return false;
+    }
+    if (imageFormatFromName(filename) != ImageFormat::D64) {
+        ESP_LOGE(TAG, "%s is not a disk image", filename);
+        return false;
+    }
+
+    std::string path = SDCard::fullPath(filename);
+    if (!disk.open(path.c_str())) {
+        ESP_LOGE(TAG, "cannot read disk image %s", path.c_str());
+        return false;
+    }
+
+    dos.setDeviceNumber(8);
+    dos.setDisk(&disk);
+    c64emu->cpu.iecbus.attach(&dos);
+
+    // Installing the traps rewrites bytes in the kernal image the running CPU
+    // is fetching from, so stop it for the moment it takes.
+    c64emu->cpu.cpuhalted = true;
+    bool installed        = c64emu->cpu.installIecTraps();
+    c64emu->cpu.cpuhalted = false;
+
+    if (!installed) {
+        ESP_LOGE(TAG, "could not install the kernal serial traps");
+        c64emu->cpu.iecbus.detach(8);
+        dos.setDisk(nullptr);
+        disk.close();
+        return false;
+    }
+
+    mounted     = true;
+    mountedName = filename;
+    ESP_LOGI(TAG, "mounted %s as drive 8", filename);
+    return true;
+}
+
+void ExternalCmds::unmountDisk() {
+    if (!mounted) return;
+
+    // Take the traps back out so the Kernal behaves exactly as it did before
+    // anything was mounted.
+    c64emu->cpu.cpuhalted = true;
+    c64emu->cpu.removeIecTraps();
+    c64emu->cpu.cpuhalted = false;
+    c64emu->cpu.iecbus.detach(8);
+    dos.setDisk(nullptr);
+    disk.close();
+
+    mounted = false;
+    mountedName.clear();
+    ESP_LOGI(TAG, "unmounted drive 8");
+}
+
 void ExternalCmds::reset() {
     if (c64emu != nullptr) {
             c64emu->cpu.cpuhalted = true;

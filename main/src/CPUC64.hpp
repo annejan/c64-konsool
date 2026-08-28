@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include "CIA.hpp"
 #include "CPU6502.hpp"
+#include "drive/IecBus.hpp"
 #include "Joystick.hpp"
 #include "VIC.hpp"
 #include <cstdint>
@@ -31,6 +32,10 @@ class C64Emu;
 
 class CPUC64 : public CPU6502 {
 private:
+  uint16_t iecTrapAddr[8] = {};
+  uint8_t iecTrapSavedByte[8] = {};
+  bool iecTrapsActive = false;
+  bool handleIecTrap(uint16_t addr);
   C64Emu *c64emu;
   uint8_t *ram;
   uint8_t *basicrom;
@@ -97,6 +102,28 @@ public:
 
   void cmd6502halt() override;
   void run() override;
+
+  // Serial bus, and the Kernal routines we stand in for.
+  //
+  // There is no IEC hardware in this emulator, so instead the Kernal's own
+  // serial routines are replaced: each one gets a JAM opcode patched over its
+  // first byte, and cmd6502halt() picks the call up from there. The addresses
+  // come from the Kernal jump table rather than being hardcoded.
+  IecBus iecbus;
+  enum IecTrap {
+    IEC_TRAP_LISTEN = 0,
+    IEC_TRAP_TALK,
+    IEC_TRAP_SECOND,
+    IEC_TRAP_TKSA,
+    IEC_TRAP_CIOUT,
+    IEC_TRAP_ACPTR,
+    IEC_TRAP_UNTLK,
+    IEC_TRAP_UNLSN,
+    IEC_TRAP_COUNT
+  };
+  bool installIecTraps();
+  void removeIecTraps();
+  bool iecTrapsInstalled() const { return iecTrapsActive; }
 
   void initMemAndRegs();
   void init(uint8_t *ram, uint8_t *charrom, VIC *vic, C64Emu *c64emu);

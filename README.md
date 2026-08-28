@@ -30,13 +30,13 @@ Since the menu structure is still being developed, I'm going to not document mor
 
 ### Supported file formats
 
-| Format   | Support                                                              |
-| -------- | -------------------------------------------------------------------- |
-| **.PRG** | Full. Loaded straight into memory.                                    |
-| **.T64** | Full. Pick a program from the tape container.                         |
-| **.D64** | Read only. Lists the PRG files on the disk and loads the one you pick. |
-| .TAP     | Not supported, needs datasette emulation.                             |
-| .CRT     | Not supported, needs cartridge ROM banking.                           |
+| Format   | Support                                                          |
+| -------- | ---------------------------------------------------------------- |
+| **.PRG** | Full. Loaded straight into memory.                               |
+| **.T64** | Full. Pick a program from the tape container.                    |
+| **.D64** | Read only, mountable as drive 8 so the C64 loads from it itself. |
+| .TAP     | Not supported, needs datasette emulation.                        |
+| .CRT     | Not supported, needs cartridge ROM banking.                      |
 
 ### Loading files
 
@@ -48,25 +48,61 @@ Since the menu structure is still being developed, I'm going to not document mor
 
 - When the C64 screen shows again, type the command 'run' and press enter.
 
-### What the .d64 support does and does not do
+### Two ways to use a .d64
 
-Programs are copied out of the disk image and placed directly in memory, the
-same way a .prg is. There is no 1541 drive and no serial bus behind it, so:
+Selecting a disk image gives you a choice.
 
-- Only PRG files on the disk are listed. SEQ, USR and REL files are not.
-- A title that loads further parts from disk while it runs, or that uses its own
-  fast loader, will not get past its first stage.
-- Nothing is written back. The image is opened read only.
+**Mount as drive 8** hands the whole disk to the C64, which then loads from it
+itself:
+
+```
+LOAD"$",8        list the directory
+LOAD"NAME",8     load a program
+LOAD"*",8,1      load the first program
+```
+
+This is the one to use for anything that loads more than one part, because the
+C64 stays in charge of the loading. The disk stays mounted until you mount a
+different one, the same way a real drive stays plugged in across a reset.
+
+**Picking a program from the list** copies that one program straight into
+memory, the same way a .prg is loaded. It is quicker for something that loads
+in one go, and it is the only option for a .t64.
 
 Files that were never closed properly on the original disk are listed with a
 trailing `*`, exactly as a real directory listing marks them, and will usually
 fail to load.
 
-### Loading from BASIC
+### How the drive emulation works, and what it will not do
 
-`LOAD"NAME",8` still works from the C64 prompt and still loads `NAME.PRG` from
-the `c64prg` directory. It does not reach inside .t64 or .d64 containers; use
-the menu for those.
+There is no serial bus hardware in this emulator. Instead the Kernal's own
+serial routines are replaced: `LISTEN`, `TALK`, `SECOND`, `TKSA`, `CIOUT`,
+`ACPTR`, `UNTLK` and `UNLSN` each get a JAM opcode patched over their first
+byte, and the emulator services the call from the mounted image. Their
+addresses are read out of the Kernal jump table rather than hardcoded. The
+traps are only in place while a disk is mounted; unmount and the ROM is exactly
+as it was.
+
+Because every one of the Kernal's higher level routines is built on those eight
+primitives, implementing them once covers `LOAD`, `SAVE`, `OPEN`, `CHRIN`,
+directory listings and sequential files alike.
+
+What this does **not** cover:
+
+- **Fast loaders.** A fast loader bit-bangs the serial lines directly and
+  uploads its own code into the drive, so it never calls the Kernal routines
+  that are trapped. That needs a real 1541 with its own CPU, which is a
+  separate piece of work; the `IecDevice` interface exists so it can be added
+  underneath without disturbing anything above it.
+- **Writing.** `SAVE`, `OPEN` for write and the scratch, rename and format
+  commands all answer `26,WRITE PROTECT ON`. Reading is unaffected.
+- **REL files**, which need side sectors.
+
+### Loading a .prg from BASIC
+
+With no disk mounted, `LOAD"NAME",8` at the C64 prompt still loads `NAME.PRG`
+straight from the `c64prg` directory on the card. Mounting a disk takes that
+over: while one is mounted, drive 8 is the disk.
 
 ### Joystick emulation
 
@@ -118,18 +154,22 @@ make prepare
 make build
 ```
 
-## Running the image format tests
+## Running the tests
 
-The .t64 and .d64 readers depend on nothing but POSIX file calls, so they can be
-built and tested on a normal machine without ESP-IDF:
+The image readers and the drive emulation depend on nothing but POSIX file
+calls, so they can be built and run on a normal machine without ESP-IDF:
 
 ```bash
-make -C main/src/images/test run
+make -C main/src/images/test run    # .t64 and .d64 parsing
+make -C main/src/drive/test run     # the drive and CBM DOS layer
 ```
 
-The tests build synthetic images, including ones with the malformed headers that
-turn up in the wild, and check that the right bytes end up at the right
-addresses.
+The first builds synthetic images, including ones carrying the malformed
+headers that turn up in the wild, and checks the right bytes end up at the
+right addresses. The second drives the emulated drive through the same bus
+commands the Kernal issues, and checks that what comes back is what a real 1541
+would return, down to the directory column layout and the status message
+format.
 
 ## Upload to the Tanmatsu
 
@@ -157,6 +197,21 @@ In VsCodium this can be done using the following statement in the settings.json
   "--query-driver=/**/riscv32-esp-elf/bin/riscv32-esp-elf-gcc"
 ]
 ```
+
+## Credits
+
+The drive emulation follows [Frodo](https://github.com/cebix/frodo4) by
+Christian Bauer, which does the same thing the same way: patch the Kernal's
+serial routines and answer them from a disk image. The Kernal status byte
+values come from its `IEC.h`.
+
+The directory listing layout, the status message format and the CBM DOS error
+texts are ported from [VICE](https://vice-emu.sourceforge.io/), and the
+handling of malformed .t64 containers follows
+[t64fix](https://github.com/Compyx/t64fix).
+
+Frodo and VICE are both GPL version 2 or later, which is compatible with this
+project's GPL version 3.
 
 ## Many many credits for the person who wrote the emulator this is based on
 

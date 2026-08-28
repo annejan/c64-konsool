@@ -20,7 +20,10 @@
 class C64Emu;
 
 #include <cstdint>
+#include <string>
 #include "SDCard.hpp"
+#include "drive/CbmDos.hpp"
+#include "drive/D64Disk.hpp"
 
 // notifications may be not larger than 20 bytes
 
@@ -80,6 +83,8 @@ class ExternalCmds {
     uint16_t actaddrreceivecmd;
 
     bool initialized = false;
+    bool mounted     = false;
+    std::string mountedName;
 
     void setVarTab(uint16_t addr);
     // Hands control back to the C64 after a load attempt, printing READY or an
@@ -93,6 +98,10 @@ class ExternalCmds {
 
    public:
     SDCard   sdcard;
+
+    // Drive 8, backed by a mounted .d64.
+    D64Disk  disk;
+    CbmDos   dos;
     // TODO: Doesn't work need to look at later
     enum class ExtCmd;
 
@@ -112,6 +121,18 @@ class ExternalCmds {
     bool    loadFile(const char* filename);
     // Loads one program out of a .t64 or .d64 by its index in entries().
     bool    loadImageEntry(const char* filename, uint16_t index);
+
+    // Attaches a .d64 as drive 8 so the C64 can LOAD from it itself, rather
+    // than having a program injected into memory. Returns false if the image
+    // cannot be read or the Kernal traps could not be installed.
+    bool    mountDisk(const char* filename);
+    void    unmountDisk();
+    bool    diskMounted() const {
+        return mounted;
+    }
+    const std::string& mountedDiskName() const {
+        return mountedName;
+    }
     void    reset();
     uint8_t executeExternalCmd(uint8_t* buffer);
 };
