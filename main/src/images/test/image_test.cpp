@@ -516,8 +516,16 @@ static void testPetsciiNames()
     memcpy(tape, "TAPE FILE", 9);
     CHECK(petsciiToDisplay(tape, 16) == "TAPE FILE", "tape padding not stripped");
 
-    uint8_t shifted[4] = {0xC1, 0xC2, 0xC3, 0xA0};
-    CHECK(petsciiToDisplay(shifted, 4) == "ABC", "shifted letters not mapped");
+    // $c1-$c3 are SHIFT+A/B/C: a spade and the two line segments a disk draws
+    // its title box from. They are graphics in the charset a directory is
+    // listed in, so they must not come back as the letters A, B and C.
+    uint8_t art[4] = {0xC1, 0xC2, 0xC3, 0xA0};
+    CHECK(petsciiToDisplay(art, 4) == "#|-", "directory art mapped to letters");
+
+    // A real title box, as drawn on kloten.d64.
+    uint8_t box[16] = {0xD5, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3,
+                       0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC9};
+    CHECK(petsciiToDisplay(box, 16) == "+--------------+", "title box not drawn as a box");
 
     uint8_t control[3] = {0x01, 0x93, 0x41};
     CHECK(petsciiToDisplay(control, 3) == "__A", "control codes not sanitised");
