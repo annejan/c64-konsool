@@ -128,7 +128,7 @@ static void testMatchesFrodoPacking()
         block[1] = in[2];
         block[2] = in[3];
 
-        uint8_t sector[GCR_SECTOR_SIZE];
+        uint8_t sector[GCR_SECTOR_SIZE_MAX];
         gcrEncodeSector(block, 18, 0, 'I', 'D', sector);
 
         uint8_t mine[5];
@@ -153,7 +153,7 @@ static void testSectorRoundTrip()
     uint8_t block[CBM_SECTOR_SIZE];
     for (unsigned int i = 0; i < CBM_SECTOR_SIZE; i++) block[i] = static_cast<uint8_t>(i);
 
-    uint8_t sector[GCR_SECTOR_SIZE];
+    uint8_t sector[GCR_SECTOR_SIZE_MAX];
     gcrEncodeSector(block, 17, 5, 'A', 'B', sector);
 
     uint8_t back[CBM_SECTOR_SIZE];
@@ -177,7 +177,7 @@ static void testHeaderContents()
     uint8_t block[CBM_SECTOR_SIZE];
     memset(block, 0x42, sizeof(block));
 
-    uint8_t sector[GCR_SECTOR_SIZE];
+    uint8_t sector[GCR_SECTOR_SIZE_MAX];
     gcrEncodeSector(block, 18, 7, 'I', 'D', sector);
 
     for (unsigned int i = 0; i < GCR_SYNC_BYTES; i++) {
@@ -219,7 +219,7 @@ static void testTrackEncoding()
         unsigned int sectors = disk.sectorsPerTrack(track);
         for (unsigned int s = 0; s < sectors; s++) {
             uint8_t back[CBM_SECTOR_SIZE];
-            if (!gcrDecodeSector(gcr.data() + s * GCR_SECTOR_SIZE, back)) {
+            if (!gcrDecodeSector(gcr.data() + s * gcrSectorSizeForTrack(track), back)) {
                 CHECK(false, "track %u sector %u did not decode", track, s);
                 break;
             }
@@ -231,9 +231,11 @@ static void testTrackEncoding()
             }
         }
 
-        // The tail past the last sector has to be gap, not stale bytes.
+        // The tail past the last sector has to be gap, not stale bytes. Only
+        // the track's own length is on the surface; the rest of the buffer
+        // belongs to longer tracks and the head never reaches it.
         bool tailClean = true;
-        for (size_t i = sectors * GCR_SECTOR_SIZE; i < GCR_TRACK_SIZE; i++) {
+        for (size_t i = sectors * gcrSectorSizeForTrack(track); i < gcrTrackBytes(track); i++) {
             if (gcr[i] != GCR_GAP_BYTE) {
                 tailClean = false;
                 break;
@@ -248,12 +250,44 @@ static void testTrackEncoding()
 
 static void testTrackFitsRealDisk()
 {
-    printf("GCR: an encoded track fits inside a real track's byte capacity\n");
-    // A 1541 track in the fastest speed zone holds roughly 7692 GCR bytes.
-    // Encoding 21 sectors has to stay inside that or the layout is not
-    // physically plausible.
-    CHECK(GCR_TRACK_SIZE <= 7692, "a 21 sector track needs %u bytes, more than a real one holds", GCR_TRACK_SIZE);
-    CHECK(GCR_SECTOR_SIZE == GCR_SYNC_BYTES + 10 + 9 + GCR_SYNC_BYTES + 325 + 8, "sector size does not add up");
+    printf("GCR: every track fits its real capacity and has no dead stretch\n");
+
+    // The DOS hunts for a sync mark with a timer, not a byte count: $F556
+    // arms VIA 1's T1 with $D0xx and gives up when the high byte falls below
+    // $80, so about 20480 drive cycles. Any run of track without a sync mark
+    // in it that takes longer than that to pass the head is unreadable, and
+    // the DOS reports error 3, no sync found. The longest such run is the
+    // data block of the last sector, its gap, and whatever capacity is left
+    // over at the end of the track.
+    const unsigned int syncTimeout = 20480;
+
+    MemDisk disk;
+    for (unsigned int track = 1; track <= 35; track++) {
+        unsigned int zone    = gcrSpeedZone(track);
+        unsigned int sectors = disk.sectorsPerTrack(track);
+        unsigned int stride  = gcrSectorSize(zone);
+        unsigned int used    = sectors * stride;
+        unsigned int cap     = gcrZoneTrackBytes(zone);
+
+        CHECK(used <= cap, "track %u needs %u bytes, more than the %u a real one holds", track, used, cap);
+
+        // A revolution is a revolution whatever zone the head is over: 300
+        // rpm is 200000 cycles at 1 MHz. Capacity and byte rate have to agree
+        // on that or the disk turns at the wrong speed.
+        unsigned int revolution = cap * gcrZoneCyclesPerByte(zone);
+        CHECK(revolution > 199000 && revolution < 201000, "track %u turns in %u cycles, not the 200000 of 300 rpm",
+              track, revolution);
+
+        unsigned int leftOver = cap - used;
+        unsigned int longest  = GCR_DATA_BYTES + (stride - GCR_SECTOR_BODY) + leftOver;
+        unsigned int cycles   = longest * gcrZoneCyclesPerByte(zone);
+        CHECK(cycles * 2 < syncTimeout * 3, "track %u has a %u byte stretch with no sync mark: %u cycles against a %u budget",
+              track, longest, cycles, syncTimeout);
+    }
+
+    CHECK(GCR_SECTOR_BODY == GCR_SYNC_BYTES + 10 + 9 + GCR_SYNC_BYTES + 325, "sector size does not add up");
+    CHECK(GCR_TRACK_SIZE >= gcrZoneTrackBytes(3), "the track buffer is too small for the longest track");
+    CHECK(GCR_SECTOR_SIZE_MAX >= gcrSectorSize(2), "the sector buffer is too small for the widest sector");
 }
 
 static void testRejectsBadSymbols()
@@ -263,12 +297,12 @@ static void testRejectsBadSymbols()
     uint8_t block[CBM_SECTOR_SIZE];
     memset(block, 0x11, sizeof(block));
 
-    uint8_t sector[GCR_SECTOR_SIZE];
+    uint8_t sector[GCR_SECTOR_SIZE_MAX];
     gcrEncodeSector(block, 10, 3, 'A', 'B', sector);
 
     // Corrupt a byte inside the data block; either the symbol becomes invalid
     // or the checksum stops matching, and both must be caught.
-    uint8_t corrupted[GCR_SECTOR_SIZE];
+    uint8_t corrupted[GCR_SECTOR_SIZE_MAX];
     memcpy(corrupted, sector, sizeof(corrupted));
     size_t dataAt     = GCR_SYNC_BYTES + GCR_HEADER_BYTES + GCR_HEADER_GAP + GCR_SYNC_BYTES + 20;
     corrupted[dataAt] = static_cast<uint8_t>(corrupted[dataAt] ^ 0xff);

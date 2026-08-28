@@ -45,16 +45,26 @@ void DiskController::loadTrack()
     trackDirty  = false;
     memset(gcrTrack, GCR_GAP_BYTE, sizeof(gcrTrack));
 
-    // headPos is deliberately left alone. The disk keeps turning while the
-    // head steps, so the head comes down wherever the rotation has got to,
-    // not at the start of a sector. Zeroing it here restarts the revolution
-    // on every half step, and a 1541 half steps constantly while it settles
-    // on a track, so the DOS never got to see the sectors near the end of a
-    // track at all. Every track is encoded into the same sized buffer, so the
-    // position stays in range.
+    unsigned int track = currentTrack();
+
+    // The head is not put back to the start of the track. The disk keeps
+    // turning while the head steps, so it comes down wherever the rotation
+    // has got to, not at the start of a sector. Zeroing here restarts the
+    // revolution on every half step, and a 1541 half steps constantly while
+    // it settles on a track, so the DOS never got to see the sectors near the
+    // end of a track at all.
+    //
+    // Tracks are not all the same length, so the position is carried over as
+    // a fraction of a revolution rather than as a byte count. VICE does the
+    // same in drive_set_half_track().
+    unsigned int newLen = gcrTrackBytes(track);
+    headPos             = trackLen != 0 ? static_cast<unsigned int>(
+                              (static_cast<uint64_t>(headPos) * newLen) / trackLen)
+                                        : 0;
+    trackLen            = newLen;
+    if (headPos >= trackLen) headPos = 0;
 
     if (disk == nullptr) return;
-    unsigned int track = currentTrack();
     if (track < 1 || track > disk->tracks()) return;
 
     trackLoaded = gcrEncodeTrack(*disk, track, id1, id2, gcrTrack);
@@ -98,8 +108,9 @@ void DiskController::flushTrack()
     }
 
     unsigned int sectors = disk->sectorsPerTrack(currentTrack());
+    unsigned int stride  = gcrSectorSizeForTrack(currentTrack());
     for (unsigned int sector = 0; sector < sectors; sector++) {
-        const uint8_t* sectorGcr = gcrTrack + sector * GCR_SECTOR_SIZE;
+        const uint8_t* sectorGcr = gcrTrack + sector * stride;
 
         // Confirm the header still says what we think it does before writing
         // anywhere, so a garbled track cannot scribble over the wrong sector.
@@ -125,7 +136,7 @@ void DiskController::writeGcrByte(uint8_t value)
     trackDirty        = true;
 
     headPos++;
-    if (headPos >= GCR_TRACK_SIZE) headPos = 0;
+    if (headPos >= trackLen) headPos = 0;
 }
 
 uint8_t DiskController::readGcrByte()
@@ -134,7 +145,7 @@ uint8_t DiskController::readGcrByte()
 
     uint8_t value = gcrTrack[headPos];
     headPos++;
-    if (headPos >= GCR_TRACK_SIZE) headPos = 0;
+    if (headPos >= trackLen) headPos = 0;
     return value;
 }
 
@@ -142,7 +153,7 @@ void DiskController::rotate()
 {
     if (!trackLoaded) return;
     headPos++;
-    if (headPos >= GCR_TRACK_SIZE) headPos = 0;
+    if (headPos >= trackLen) headPos = 0;
 }
 
 bool DiskController::syncFound() const
@@ -160,9 +171,5 @@ uint8_t DiskController::writeProtectBit() const
 
 uint8_t DiskController::speedZone() const
 {
-    unsigned int track = currentTrack();
-    if (track <= 17) return 3;
-    if (track <= 24) return 2;
-    if (track <= 30) return 1;
-    return 0;
+    return static_cast<uint8_t>(gcrSpeedZone(currentTrack()));
 }

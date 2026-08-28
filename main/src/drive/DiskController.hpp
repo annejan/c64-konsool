@@ -33,6 +33,10 @@ class DiskController {
     DiskImage*   disk        = nullptr;
     unsigned int halfTrack   = 2 * 18;  // the head starts on the directory track
     unsigned int headPos     = 0;
+    // How much of gcrTrack is actually on the surface of this track. Outer
+    // tracks hold more bytes per revolution than inner ones, so this is the
+    // point the head wraps at, not the size of the buffer.
+    unsigned int trackLen    = GCR_TRACK_SIZE;
     bool         trackLoaded = false;
     uint8_t      id1         = 0;
     uint8_t      id2         = 0;
@@ -83,6 +87,12 @@ class DiskController {
     unsigned int headPosition() const
     {
         return headPos;
+    }
+
+    // How many bytes go past the head in one revolution of this track.
+    unsigned int trackLength() const
+    {
+        return trackLen;
     }
 
     // Moves the head on by one byte without reading it. The disk keeps turning

@@ -259,8 +259,7 @@ void Drive1541::countByteReady(unsigned int cycles)
 
     // One byte is eight bit cells, and the bit rate is what the speed zone
     // selects: the outer tracks hold more, so their bytes come round sooner.
-    static const unsigned int cyclesPerByte[4] = {32, 30, 28, 26};
-    unsigned int              perByte          = cyclesPerByte[controller.speedZone() & 3];
+    unsigned int perByte = gcrZoneCyclesPerByte(controller.speedZone());
 
     byteReadyCycles += cycles;
     while (byteReadyCycles >= perByte) {
