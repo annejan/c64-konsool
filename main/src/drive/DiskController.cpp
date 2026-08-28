@@ -159,7 +159,18 @@ void DiskController::rotate()
 bool DiskController::syncFound() const
 {
     if (!trackLoaded) return false;
-    return gcrTrack[headPos] == 0xff;
+    if (gcrTrack[headPos] != 0xff) return false;
+
+    // A sync mark is a run of one bits, and the drive writes five whole bytes
+    // of them. A single $ff on its own is not one: encoded data really does
+    // contain byte aligned $ff bytes, dozens of them on a real disk, and
+    // treating those as a sync mark holds off BYTE READY in the middle of a
+    // data block. The byte is lost, the checksum fails, and the drive reports
+    // error 23. Requiring a second $ff next to it is enough to tell them
+    // apart, since the encoding cannot produce sixteen one bits in a row.
+    unsigned int prev = (headPos == 0) ? (trackLen - 1) : (headPos - 1);
+    unsigned int next = (headPos + 1 >= trackLen) ? 0 : (headPos + 1);
+    return gcrTrack[prev] == 0xff || gcrTrack[next] == 0xff;
 }
 
 // How long each part of a swap is held, in drive cycles. Following VICE's

@@ -23,14 +23,66 @@ ImageFormat imageFormatFromName(const std::string& filename)
 // control characters into the menu.
 static char petToAscii(uint8_t c)
 {
+    // The shifted charset repeats the letters at $c1-$da.
     if (c >= 0xC1 && c <= 0xDA) {
         c = static_cast<uint8_t>(c - 0x80);
     }
     if (c >= 0x41 && c <= 0x5A) return static_cast<char>(c);  // A-Z
     if (c >= 0x20 && c <= 0x40) return static_cast<char>(c);  // space, digits, punctuation
     if (c == 0x5B || c == 0x5D) return static_cast<char>(c);  // [ ]
-    return '_';
+
+    // A control code in a name is not art, it is either junk or an attempt to
+    // do something to the screen, so keep it obvious rather than dressing it
+    // up as a graphic.
+    if (c < 0x20 || (c >= 0x80 && c <= 0x9F)) return '_';
+
+    // Disk names and directory art lean on the block graphics, and turning all
+    // of them into the same character makes a border look like a mistake.
+    // These are only stand-ins for a font that has no PETSCII in it, but they
+    // keep the shape of what was drawn.
+    switch (c) {
+        case 0x60:  // horizontal bar, and the line the shifted set draws with
+        case 0x40:
+        case 0x63:
+        case 0x64:
+        case 0x77:
+        case 0x78:
+            return '-';
+        case 0x5C:  // vertical bar
+        case 0x62:
+        case 0x65:
+        case 0x67:
+        case 0x74:
+        case 0x75:
+            return '|';
+        case 0x6B:  // corners and junctions
+        case 0x6C:
+        case 0x6E:
+        case 0x6F:
+        case 0x70:
+        case 0x72:
+        case 0x73:
+        case 0x7A:
+        case 0x7B:
+        case 0x7D:
+            return '+';
+        case 0x61:  // solid and shaded blocks
+        case 0x66:
+        case 0x69:
+        case 0x6A:
+        case 0x76:
+        case 0x79:
+        case 0x7C:
+        case 0x7E:
+        case 0x7F:
+        case 0xA0:
+            return '#';
+        default:
+            break;
+    }
+    return '.';
 }
+
 
 std::string petsciiToDisplay(const uint8_t* petscii, size_t len)
 {
