@@ -329,6 +329,28 @@ static void testControllerReadsTrack()
     CHECK(!empty.syncFound(), "an empty drive found a sync mark");
 }
 
+static void testResetKeepsTheDisk()
+{
+    printf("Controller: a reset parks the head without losing the disk\n");
+    MemDisk        disk;
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    // Move away from where a reset should leave the head.
+    for (int i = 0; i < 6; i++) controller.moveHeadIn();
+    CHECK(controller.currentTrack() != 18, "the head did not move");
+
+    controller.reset();
+    CHECK(controller.currentTrack() == 18, "a reset did not park the head on track 18");
+
+    // The disk is still in the drive, so there must be a track under the head
+    // rather than gap. Getting this wrong looks exactly like an unformatted
+    // disk and would leave the drive hunting forever.
+    CHECK(controller.syncFound(), "no sync under the head after a reset");
+    uint8_t first = controller.readGcrByte();
+    CHECK(first == 0xff, "the head read $%02x after a reset, expected a sync byte", first);
+}
+
 static void testSpeedZones()
 {
     printf("Controller: speed zone follows the track number\n");
@@ -380,6 +402,170 @@ static void testDriveMemoryMap()
     CHECK(drive.getMem(0xc000) == 0, "unmapped ROM space returned something");
 }
 
+/* ------------------------------------------------- running the drive CPU -- */
+
+// The real DOS ROM is copyrighted and not shipped, so the drive CPU could not
+// be run at all in the tests. It does not need the real one: a handful of
+// hand assembled instructions in a ROM image is enough to drive the whole
+// stack, the reset vector, the memory map, both VIAs, the bus lines and the
+// head.
+//
+// The program below waits for ATN, acknowledges it, reads four bytes off the
+// head into zero page, then parks itself:
+//
+//      C000  78         sei
+//      C001  a2 ff      ldx #$ff
+//      C003  9a         txs
+//      C004  a9 1a      lda #$1a       ; DATA, CLK and ATNA are outputs
+//      C006  8d 02 18   sta $1802      ; VIA 1 DDRB
+//      C009  a9 00      lda #$00
+//      C00b  8d 00 18   sta $1800      ; release everything
+//      C00e  ad 00 18   lda $1800      ; wait_atn: read port B
+//      C011  29 80      and #$80       ; ATN reads as a one when low
+//      C013  f0 f9      beq wait_atn
+//      C015  a9 10      lda #$10       ; acknowledge by raising ATNA
+//      C017  8d 00 18   sta $1800
+//      C01a  a2 00      ldx #$00
+//      C01c  ad 01 1c   lda $1c01      ; read_loop: VIA 2 port A is the head
+//      C01f  9d 00 00   sta $0000,x
+//      C022  e8         inx
+//      C023  e0 04      cpx #$04
+//      C025  d0 f5      bne read_loop
+//      C027  a9 42      lda #$42       ; leave a marker so the test can tell
+//      C029  8d 10 00   sta $0010
+//      C02c  4c 2c c0   done: jmp done
+static void buildTestRom(uint8_t* rom)
+{
+    memset(rom, 0xff, Drive1541::ROM_SIZE);
+
+    static const uint8_t program[] = {
+        0x78,              // sei
+        0xa2, 0xff,        // ldx #$ff
+        0x9a,              // txs
+        0xa9, 0x1a,        // lda #$1a
+        0x8d, 0x02, 0x18,  // sta $1802
+        0xa9, 0x00,        // lda #$00
+        0x8d, 0x00, 0x18,  // sta $1800
+        0xad, 0x00, 0x18,  // lda $1800
+        0x29, 0x80,        // and #$80
+        0xf0, 0xf9,        // beq -7
+        0xa9, 0x10,        // lda #$10
+        0x8d, 0x00, 0x18,  // sta $1800
+        0xa2, 0x00,        // ldx #$00
+        0xad, 0x01, 0x1c,  // lda $1c01
+        0x9d, 0x00, 0x00,  // sta $0000,x
+        0xe8,              // inx
+        0xe0, 0x04,        // cpx #$04
+        0xd0, 0xf5,        // bne -11
+        0xa9, 0x42,        // lda #$42
+        0x8d, 0x10, 0x00,  // sta $0010
+        0x4c, 0x2c, 0xc0,  // jmp $c02c
+    };
+    memcpy(rom, program, sizeof(program));
+
+    // Reset vector at $fffc, which is the top of the ROM.
+    rom[Drive1541::ROM_SIZE - 4] = 0x00;
+    rom[Drive1541::ROM_SIZE - 3] = 0xc0;
+}
+
+static void testDriveCpuRuns()
+{
+    printf("Drive: the CPU boots, answers ATN and reads the head\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildTestRom(rom);
+
+    MemDisk   disk;
+    IecLines  lines;
+    Drive1541 drive;
+
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.setDisk(&disk);
+    CHECK(drive.ready(), "the drive did not accept the ROM");
+
+    drive.reset();
+    drive.idle = false;
+
+    // It should be spinning on the ATN check, not off in the weeds.
+    drive.emulateCycles(200);
+    CHECK(drive.getMem(0x0010) != 0x42, "the program finished before ATN was ever asserted");
+
+    // Once the drive has set its direction register, releasing everything
+    // leaves the bus alone.
+    CHECK(!lines.dataLow(), "the drive held DATA low while idle");
+    CHECK(!lines.clkLow(), "the drive held CLK low while idle");
+
+    // The C64 asserts ATN. The acknowledge gate should pull DATA low straight
+    // away, before the drive has even noticed.
+    lines.c64Atn = true;
+    drive.refreshIecOutputs();
+    CHECK(lines.dataLow(), "DATA was not pulled low when ATN went active");
+
+    // Now let it run: it should see ATN, acknowledge, and read the head.
+    for (int i = 0; i < 100 && drive.getMem(0x0010) != 0x42; i++) {
+        drive.emulateCycles(100);
+    }
+    CHECK(drive.getMem(0x0010) == 0x42, "the drive program never reached its marker");
+
+    // Acknowledging released DATA again, which is how a drive reports itself
+    // present and ready.
+    CHECK(!lines.dataLow(), "DATA stayed low after the drive acknowledged");
+
+    // The four bytes it read are the start of track 18, which begins with the
+    // sync mark the encoder wrote.
+    for (int i = 0; i < 4; i++) {
+        uint8_t got = drive.getMem(static_cast<uint16_t>(i));
+        CHECK(got == 0xff, "byte %d off the head was $%02x, expected a sync byte", i, got);
+    }
+}
+
+static void testDriveCpuCycleAccounting()
+{
+    printf("Drive: instructions report the cycles they spent\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildTestRom(rom);
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.reset();
+
+    // Every instruction has to claim at least one cycle, or the interleaving
+    // against the C64 would spin without making progress.
+    for (int i = 0; i < 20; i++) {
+        unsigned int used = drive.stepInstruction();
+        CHECK(used >= 1, "an instruction claimed %u cycles", used);
+        CHECK(used <= 8, "an instruction claimed %u cycles, which is too many", used);
+    }
+
+    // Asking for a budget consumes roughly that much, give or take the
+    // instruction it was in the middle of.
+    unsigned int spent = drive.emulateCycles(100);
+    CHECK(spent >= 100 && spent < 110, "a budget of 100 cycles spent %u", spent);
+}
+
+static void testDriveWithoutRom()
+{
+    printf("Drive: with no ROM it stays inert rather than running wild\n");
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.reset();
+
+    CHECK(!drive.ready(), "a drive with no ROM claimed to be ready");
+    // Asking it to run must not execute anything or touch the bus.
+    unsigned int spent = drive.emulateCycles(50);
+    CHECK(spent == 50, "a drive with no ROM did not just consume the budget");
+    CHECK(!lines.dataLow() && !lines.clkLow(), "a drive with no ROM drove the bus");
+}
+
 int main()
 {
     testViaPorts();
@@ -390,8 +576,12 @@ int main()
     testDriveReadsBusState();
     testHeadStepping();
     testControllerReadsTrack();
+    testResetKeepsTheDisk();
     testSpeedZones();
     testDriveMemoryMap();
+    testDriveCpuRuns();
+    testDriveCpuCycleAccounting();
+    testDriveWithoutRom();
 
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

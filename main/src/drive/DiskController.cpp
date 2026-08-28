@@ -8,10 +8,13 @@ DiskController::DiskController()
 
 void DiskController::reset()
 {
-    halfTrack   = 2 * 18;
-    headPos     = 0;
-    trackLoaded = false;
-    memset(gcrTrack, GCR_GAP_BYTE, sizeof(gcrTrack));
+    halfTrack = 2 * 18;
+    headPos   = 0;
+    // Reload rather than just clearing: a reset parks the head on the
+    // directory track, it does not take the disk out. Clearing without
+    // reloading leaves the head reading gap forever, which looks exactly like
+    // an unformatted disk.
+    loadTrack();
 }
 
 void DiskController::setDisk(DiskImage* image)
