@@ -24,7 +24,15 @@
 
 static const uint16_t* tftColorFromC64ColorArr;
 
-static bool collArr[4] = {false, true, true, true};
+// Which multicolour bit pairs count as foreground, for sprite priority and for
+// sprite-to-background collision. In the multicolour modes 00 and 01 both
+// belong to the background; only 10 and 11 are foreground. Frodo builds the
+// same mask by keeping the high bit of each pair and spreading it across the
+// two pixels: "(data & 0xaa) | (data & 0xaa) >> 1" (src/VIC.cpp, el_mc_text
+// and el_mc_bitmap). Calling 01 foreground hides sprites behind what should be
+// background, and only in multicolour areas -- hires tests the bit itself and
+// was never wrong.
+static bool collArr[4] = {false, false, true, true};
 
 VIC::VIC()
 {
