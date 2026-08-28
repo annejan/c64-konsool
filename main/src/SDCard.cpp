@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "Config.hpp"
+#include "images/CbmImage.hpp"
 // #include "driver/sdmmc_default_configs.h"
 #include "driver/sdmmc_host.h"
 #include "driver/sdspi_host.h"
@@ -148,9 +149,17 @@ void getPath(char* path, uint8_t* ram) {
     path[i]   = '\0';
 }
 
-uint16_t SDCard::load(const char* path, uint8_t* ram, size_t len) {
-    char full_path[128];
-    snprintf(full_path, sizeof(full_path), "%s%s", SD_CARD_PRG_PATH, path);
+std::string SDCard::fullPath(const char* filename) {
+    std::string path = SD_CARD_PRG_PATH;
+    if (filename == nullptr || filename[0] == '\0') return path;
+    if (filename[0] != '/') path += '/';
+    path += filename;
+    return path;
+}
+
+// Reads a .prg into RAM: two byte load address followed by the data. Returns
+// the address one past the last byte written, or 0 if nothing was loaded.
+static uint16_t loadPrgFile(const char* full_path, uint8_t* ram) {
     int fd = open(full_path, O_RDONLY);
     if (fd < 0) return 0;
 
@@ -160,43 +169,61 @@ uint16_t SDCard::load(const char* path, uint8_t* ram, size_t len) {
         return 0;
     }
     uint16_t addr = hdr[0] | (hdr[1] << 8);
-    uint16_t pos  = addr;
-    while (read(fd, &ram[pos], 1) == 1) pos++;
+
+    // A program longer than the space above its load address would otherwise
+    // run straight off the end of the 64K RAM buffer, so stop at $FFFF.
+    size_t pos  = addr;
+    size_t room = (C64_RAM_SIZE - 1) - addr;
+    while (room > 0) {
+        ssize_t got = read(fd, ram + pos, room);
+        if (got <= 0) break;
+        pos  += static_cast<size_t>(got);
+        room -= static_cast<size_t>(got);
+    }
     close(fd);
-    return pos;
+
+    if (pos == addr) return 0;
+    return static_cast<uint16_t>(pos);
+}
+
+uint16_t SDCard::load(const char* path, uint8_t* ram, size_t len) {
+    (void)len;
+    return loadPrgFile(fullPath(path).c_str(), ram);
 }
 
 uint16_t SDCard::load_auto(const char* path, uint8_t* ram, size_t len) {
+    (void)path;
+    (void)len;
     char file_path[64] = {0};
     if (!initialized) return 0;
+    // The file name comes from the BASIC LOAD command still on screen.
     getPath(file_path, ram);
-    ESP_LOGI(TAG, "load file %s", path);
+    ESP_LOGI(TAG, "load file %s", file_path);
 
-    char full_path[128];
-    snprintf(full_path, sizeof(full_path), "%s%s", SD_CARD_PRG_PATH, file_path);
-    int fd = open(full_path, O_RDONLY);
-    if (fd < 0) return 0;
-
-    uint8_t hdr[2];
-    if (read(fd, hdr, 2) != 2) {
-        close(fd);
-        return 0;
-    }
-    uint16_t addr = hdr[0] | (hdr[1] << 8);
-    uint16_t pos  = addr;
-    while (read(fd, &ram[pos], 1) == 1) pos++;
-    close(fd);
-    return pos;
+    return loadPrgFile(fullPath(file_path).c_str(), ram);
 }
 
 bool SDCard::save(const char* path, const uint8_t* ram, size_t len) {
+    (void)path;
+    (void)len;
     if (!initialized) return false;
-    getPath(const_cast<char*>(path), const_cast<uint8_t*>(ram));
+
+    // getPath() writes the name it scrapes off the screen into the buffer it
+    // is given, so it needs somewhere writable of its own.
+    char file_path[64] = {0};
+    getPath(file_path, const_cast<uint8_t*>(ram));
+
     uint16_t startaddr = ram[43] + ram[44] * 256;
     uint16_t endaddr   = ram[45] + ram[46] * 256;
-    ESP_LOGI(TAG, "save file %s", path);
+    if (endaddr <= startaddr) {
+        ESP_LOGI(TAG, "nothing to save, start $%04x end $%04x", startaddr, endaddr);
+        return false;
+    }
 
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    std::string full_path = fullPath(file_path);
+    ESP_LOGI(TAG, "save file %s", full_path.c_str());
+
+    int fd = open(full_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
 
     write(fd, &ram[43], 2);
@@ -207,47 +234,34 @@ bool SDCard::save(const char* path, const uint8_t* ram, size_t len) {
 
 std::vector<std::string> SDCard::listPagedEntries(const char* path, size_t page, size_t pageSize) {
     std::vector<std::string> result;
-    DIR*                     dir = nullptr;
-    struct dirent*           ent;
 
     if (!initialized) return result;
 
-    // calculate the start offset
-    size_t startOffset = page * pageSize;
-
     ESP_LOGI(TAG, "list paged entries %s, page %zu, pageSize %zu", path, page, pageSize);
 
-    dir = opendir(path);
+    DIR* dir = opendir(path);
     if (!dir) {
-        ESP_LOGI(TAG, "cannot open root dir");
-        closedir(dir);
+        ESP_LOGI(TAG, "cannot open %s", path);
         return result;
     }
 
-    // Move the directory to the start offset
-    for (uint16_t count = 0; count < startOffset; count++) {
-        if (readdir(dir) == nullptr) {
-            closedir(dir);
-            return result;
+    // Only loadable files count towards a page. Letting every directory entry
+    // count would make the page boundaries depend on whatever else happens to
+    // be on the card.
+    size_t         startOffset = page * pageSize;
+    size_t         matched     = 0;
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        std::string name = ent->d_name;
+        if (imageFormatFromName(name) == ImageFormat::UNKNOWN) continue;
+
+        if (matched >= startOffset) {
+            result.push_back(name);
+            if (result.size() >= pageSize) break;
         }
+        matched++;
     }
 
-    // Read the next page of entries until either the end of the
-    // directory or the desired page size is reached
-    uint32_t count = 0;
-    while (count < pageSize) {
-        ent = readdir(dir);
-        if (ent == nullptr) {
-            break;
-        }
-        // if the name > 4 characters and ends with.prg, cut off '.prg' and add it to the result
-        std::string name = ent->d_name;
-        if (name.length() > 4 && name.substr(name.length() - 4) == ".prg") {
-            name = name.substr(0, name.length() - 4);
-            result.push_back(name);
-        }
-        count++;
-    }
     closedir(dir);
     return result;
 }
