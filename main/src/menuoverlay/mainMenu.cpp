@@ -61,7 +61,7 @@ bool MainMenu::init()
     int id_count = 1;
     loadMenu     = new LoadMenu("Load file from SD card (c64prg folder)", this, menuController);
     loadMenu->init();
-    usbLoadMenu = new UsbLoadMenu("Load PRG file from USB disk (disk root)", this, menuController);
+    usbLoadMenu = new UsbLoadMenu("Load file from USB disk (disk root)", this, menuController);
     usbLoadMenu->init();
 
     MenuDataStore* menuDataStore = MenuDataStore::getInstance();
@@ -76,7 +76,7 @@ bool MainMenu::init()
 
     MenuItem* usb_load_prg = new MenuItem();
     usb_load_prg->id       = id_count++;
-    usb_load_prg->title    = "Load PRG file from USB disk (disk root)";
+    usb_load_prg->title    = "Load file from USB disk (disk root)";
     usb_load_prg->type     = MenuItemType::SUBMENU;
     usb_load_prg->submenu  = usbLoadMenu;
     items.push_back(*usb_load_prg);

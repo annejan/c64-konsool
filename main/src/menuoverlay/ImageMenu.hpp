@@ -12,6 +12,8 @@
 class ImageMenu : public MenuBaseClass {
    private:
     C64Emu*                 c64emu = nullptr;
+    // The full path is what gets opened, the name is what gets shown.
+    std::string             imagePath;
     std::string             imageName;
     std::vector<ImageEntry> imageEntries;
     uint16_t                currentPage = 0;
@@ -29,10 +31,11 @@ class ImageMenu : public MenuBaseClass {
     ImageMenu(std::string title, MenuBaseClass* previousMenu, MenuController* menuController);
     ~ImageMenu() override;
 
-    // Reads the directory of `filename` and rebuilds the menu around it.
+    // Reads the directory of the container at `path` and rebuilds the menu
+    // around it. Works for any path, so a USB disk reads the same as the card.
     // Returns false when the container cannot be read or holds nothing
     // loadable.
-    bool openImage(const std::string& filename);
+    bool openImage(const std::string& path);
 
     bool init() override;
     void update() override;

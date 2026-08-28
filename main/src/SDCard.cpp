@@ -27,7 +27,6 @@ SDCard::~SDCard()
 
 bool SDCard::init()
 {
-    esp_err_t ret;
     if (initialized) {
         return true;
     }
@@ -77,7 +76,8 @@ std::string SDCard::fullPath(const char* filename) {
 
 // Reads a .prg into RAM: two byte load address followed by the data. Returns
 // the address one past the last byte written, or 0 if nothing was loaded.
-static uint16_t loadPrgFile(const char* full_path, uint8_t* ram) {
+uint16_t SDCard::readPrg(const char* full_path, uint8_t* ram)
+{
     int fd = open(full_path, O_RDONLY);
     if (fd < 0) return 0;
 
@@ -106,7 +106,7 @@ static uint16_t loadPrgFile(const char* full_path, uint8_t* ram) {
 
 uint16_t SDCard::load(const char* path, uint8_t* ram, size_t len) {
     (void)len;
-    return loadPrgFile(fullPath(path).c_str(), ram);
+    return readPrg(fullPath(path).c_str(), ram);
 }
 
 uint16_t SDCard::load_auto(const char* path, uint8_t* ram, size_t len)
@@ -119,7 +119,7 @@ uint16_t SDCard::load_auto(const char* path, uint8_t* ram, size_t len)
     getPath(file_path, ram);
     ESP_LOGI(TAG, "load file %s", file_path);
 
-    return loadPrgFile(fullPath(file_path).c_str(), ram);
+    return readPrg(fullPath(file_path).c_str(), ram);
 }
 
 bool SDCard::save(const char* path, const uint8_t* ram, size_t len)

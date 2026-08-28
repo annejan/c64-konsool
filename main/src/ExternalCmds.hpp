@@ -129,6 +129,12 @@ class ExternalCmds {
     // Loads one program out of a .t64 or .d64 by its index in entries().
     bool    loadImageEntry(const char* filename, uint16_t index);
 
+    // The same three, addressed by full path rather than by a name in the
+    // program directory, so a USB disk can be read as well as the card.
+    bool    loadFileFromPath(const char* fullpath);
+    bool    loadImageEntryFromPath(const char* fullpath, uint16_t index);
+    bool    mountDiskFromPath(const char* fullpath);
+
     // Attaches a .d64 as drive 8 so the C64 can LOAD from it itself, rather
     // than having a program injected into memory. Returns false if the image
     // cannot be read or the Kernal traps could not be installed.

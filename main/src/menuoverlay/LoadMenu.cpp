@@ -10,6 +10,7 @@
 #include "ExternalCmds.hpp"
 #include "esp_log.h"
 #include "freertos/idf_additions.h"
+#include "SDCard.hpp"
 #include "images/CbmImage.hpp"
 #include "menuoverlay/ImageMenu.hpp"
 #include "menuoverlay/MenuController.hpp"
@@ -150,7 +151,7 @@ void LoadMenu::openImage(const std::string& filename)
         imageMenu->init();
     }
 
-    if (!imageMenu->openImage(filename)) {
+    if (!imageMenu->openImage(SDCard::fullPath(filename.c_str()))) {
         ESP_LOGE(TAG, "no loadable programs in %s", filename.c_str());
         // openImage() still leaves a readable placeholder in the submenu, so
         // show it rather than silently ignoring the selection.

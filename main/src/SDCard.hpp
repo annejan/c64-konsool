@@ -43,4 +43,7 @@ class SDCard {
     bool                     listNextEntry(uint8_t* nextEntry, size_t entrySize, bool start);
     // Builds the full path of a file in the program directory.
     static std::string       fullPath(const char* filename);
+    // Reads a .prg at `full_path` into `ram`, wherever that path happens to
+    // live. Returns the address one past the last byte written, or 0.
+    static uint16_t          readPrg(const char* full_path, uint8_t* ram);
 };
