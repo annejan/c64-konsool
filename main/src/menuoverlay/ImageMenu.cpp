@@ -2,7 +2,6 @@
 #include <cstdio>
 #include "C64Emu.hpp"
 #include "ExternalCmds.hpp"
-#include "SDCard.hpp"
 #include "esp_log.h"
 #include "freertos/idf_additions.h"
 #include "images/D64Image.hpp"
@@ -28,14 +27,16 @@ bool ImageMenu::init()
     return true;
 }
 
-bool ImageMenu::openImage(const std::string& filename)
+bool ImageMenu::openImage(const std::string& path)
 {
-    imageName = filename;
+    imagePath = path;
+    size_t slash = path.find_last_of('/');
+    imageName    = (slash == std::string::npos) ? path : path.substr(slash + 1);
     imageEntries.clear();
     currentPage = 0;
     nextPage    = 0;
 
-    ImageFormat format = imageFormatFromName(filename);
+    ImageFormat format = imageFormatFromName(imageName);
     isDisk             = (format == ImageFormat::D64);
     T64Image  t64;
     D64Image  d64;
@@ -45,28 +46,27 @@ bool ImageMenu::openImage(const std::string& filename)
     } else if (format == ImageFormat::D64) {
         image = &d64;
     } else {
-        ESP_LOGE(TAG, "%s is not a container", filename.c_str());
+        ESP_LOGE(TAG, "%s is not a container", imagePath.c_str());
     }
 
     bool ok = false;
     if (image != nullptr) {
-        std::string path = SDCard::fullPath(filename.c_str());
-        if (image->open(path.c_str())) {
+        if (image->open(imagePath.c_str())) {
             // Copy the directory out so the image file does not have to stay
             // open while the user is browsing.
             imageEntries = image->entries();
             image->close();
             ok = !imageEntries.empty();
-            ESP_LOGI(TAG, "%s holds %zu programs", filename.c_str(), imageEntries.size());
+            ESP_LOGI(TAG, "%s holds %zu programs", imagePath.c_str(), imageEntries.size());
         } else {
-            ESP_LOGE(TAG, "cannot read %s", path.c_str());
+            ESP_LOGE(TAG, "cannot read %s", imagePath.c_str());
         }
     }
 
     // Rebuild either way. Leaving the previous image's entries on screen after
     // a failed open would let the wrong program be picked, and a disk with
     // nothing extractable on it can still be mounted.
-    title = filename;
+    title = imageName;
     displayMenu();
     navigateBegin();
     return ok;
@@ -167,7 +167,7 @@ void ImageMenu::loadEntry(uint16_t index)
     // dropping the program into RAM.
     ext->reset();
     vTaskDelay(3000 / portTICK_PERIOD_MS);
-    ext->loadImageEntry(imageName.c_str(), index);
+    ext->loadImageEntryFromPath(imagePath.c_str(), index);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     menuController->hide();
 }
@@ -179,7 +179,7 @@ void ImageMenu::mountDisk()
     // Reset first so the Kernal starts clean with the drive already attached.
     ext->reset();
     vTaskDelay(3000 / portTICK_PERIOD_MS);
-    if (ext->mountDisk(imageName.c_str())) {
+    if (ext->mountDiskFromPath(imagePath.c_str())) {
         ESP_LOGI(TAG, "%s mounted as drive 8", imageName.c_str());
     } else {
         ESP_LOGE(TAG, "could not mount %s", imageName.c_str());

@@ -67,6 +67,7 @@ private:
   inline void decodeRegister1(uint8_t val) __attribute__((always_inline));
   inline void checkciatimers(uint8_t cycles) __attribute__((always_inline));
   inline void logDebugInfo() __attribute__((always_inline));
+  inline uint8_t getVirtJoyValue(bool port2) __attribute__((always_inline));
 
 public:
   VIC *vic;
@@ -89,7 +90,11 @@ public:
 
   // set by class ExternalCmds
   uint8_t joystickmode;
+  // C64 port (1 or 2, 0 for none) the emulated keyboard joystick is on, and the
+  // port a USB gamepad is on. The two are equal unless two player mode is on.
+  // Both are refreshed once per frame by updateJoystickPorts().
   uint8_t kbjoystickmode;
+  uint8_t padjoystickmode;
   bool deactivateCIA2;
   bool debug;
   uint16_t debugstartaddr;
@@ -151,6 +156,7 @@ public:
   void setPC(uint16_t pc);
   void exeSubroutine(uint16_t addr, uint8_t rega, uint8_t regx, uint8_t regy);
   void setKeycodes(uint8_t keycode1, uint8_t keycode2);
+  void updateJoystickPorts();
 };
 
 #endif // CPUC64_H

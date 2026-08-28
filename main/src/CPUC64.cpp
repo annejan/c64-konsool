@@ -82,56 +82,31 @@ uint8_t CPUC64::getMem(uint16_t addr) {
         }
         // ** CIA 1 **
         else if (addr <= 0xdcff) {
-            kbjoystickmode = menuDataStore->getInt("kb_joystick_port", 0);
             uint8_t ciaidx = (addr - 0xdc00) % 0x10;
             if (ciaidx == 0x00) {
-                uint8_t ddra  = cia1.ciaReg[0x02];
-                uint8_t input = 0xff;
-                if (joystickmode == 2) {
-                    // real joystick, but still check for keyboard input
-                    input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x01], true);
-                    if (input == 0xff) {
-                        // no key pressed -> return joystick value (of real joystick)
-                        input = joystick.getValue();
-                    }
-                } else if (kbjoystickmode == 2) {
-                    // keyboard joystick, but still check for keyboard input
-                    input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x01], true);
-                    if (input == 0xff) {
-                        // no key pressed -> return joystick value (of keyboard joystick)
-                        input = c64emu->konsoolkb.getKBJoyValue(true);
-                    }
-                } else {
-                    // keyboard
-                    input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x01], true);
+                // port 2
+                uint8_t ddra = cia1.ciaReg[0x02];
+                // check for keyboard input first, a pressed key wins over the joystick
+                uint8_t input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x01], true);
+                if (input == 0xff) {
+                    // no key pressed -> return the value of whatever drives port 2
+                    input = (joystickmode == 2) ? joystick.getValue() : getVirtJoyValue(true);
                 }
                 return (cia1.ciaReg[0x00] | ~ddra) & input;
             } else if (ciaidx == 0x01) {
-                uint8_t ddrb  = cia1.ciaReg[0x03];
-                uint8_t input = 0xff;
+                // port 1
+                uint8_t ddrb = cia1.ciaReg[0x03];
                 if (joystickmode == 2) {
                     // special case: handle fire2 button -> space key
                     if ((cia1.ciaReg[0x00] == 0x7f) && joystick.getFire2()) {
                         return 0xef;
                     }
                 }
-                if (joystickmode == 1) {
-                    // real joystick, but still check for keyboard input
-                    input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x00], false);
-                    if (input == 0xff) {
-                        // no key pressed -> return joystick value (of real joystick)
-                        input = joystick.getValue();
-                    }
-                } else if (kbjoystickmode == 1) {
-                    // keyboard joystick, but still check for keyboard input
-                    input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x00], false);
-                    if (input == 0xff) {
-                        // no key pressed -> return joystick value (of keyboard joystick)
-                        input = c64emu->konsoolkb.getKBJoyValue(false);
-                    }
-                } else {
-                    // keyboard
-                    input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x00], false);
+                // check for keyboard input first, a pressed key wins over the joystick
+                uint8_t input = c64emu->konsoolkb.getdc01(cia1.ciaReg[0x00], false);
+                if (input == 0xff) {
+                    // no key pressed -> return the value of whatever drives port 1
+                    input = (joystickmode == 1) ? joystick.getValue() : getVirtJoyValue(false);
                 }
                 return (cia1.ciaReg[0x01] | ~ddrb) & input;
             }
@@ -742,6 +717,9 @@ void IRAM_ATTR CPUC64::run() {
         // throttle CPU at end of frame, and wait for the frame to be displayed
         if (vic->rasterline == 311) {
             xSemaphoreTake(frameRateMutex, 1000);
+            // the menu can change the ports at any time, so pick the change up here
+            // instead of hitting the data store on every single CIA 1 read
+            updateJoystickPorts();
         }
     }
 }
@@ -771,6 +749,7 @@ void CPUC64::init(uint8_t* ram, uint8_t* charrom, VIC* vic, C64Emu* c64emu) {
     adjustcycles.store(0, std::memory_order_release);
     joystickmode         = 0;
     kbjoystickmode       = 0;
+    padjoystickmode      = 0;
     deactivateCIA2       = false;
     numofcycles          = 0;
     numofcyclespersecond = 0;
@@ -785,6 +764,30 @@ void CPUC64::init(uint8_t* ram, uint8_t* charrom, VIC* vic, C64Emu* c64emu) {
 
     // Setup Memory for first boot
     initMemAndRegs();
+}
+
+uint8_t CPUC64::getVirtJoyValue(bool port2) {
+    // Virtual joystick sources: the emulated keyboard joystick and a USB gamepad. In
+    // two player mode they sit on different ports, otherwise both drive the same one.
+    // All values are active low, so anding them wires the sources together.
+    uint8_t port = port2 ? 2 : 1;
+    uint8_t val  = 0xff;
+    if (kbjoystickmode == port) {
+        val &= c64emu->konsoolkb.getKBJoyValue();
+    }
+    if (padjoystickmode == port) {
+        val &= c64emu->konsoolkb.getGamepadJoyValue();
+    }
+    return val;
+}
+
+void CPUC64::updateJoystickPorts() {
+    uint8_t port   = (uint8_t)menuDataStore->getInt("kb_joystick_port", 0);
+    kbjoystickmode = port;
+    // in two player mode the gamepad takes the other port, so the keyboard joystick
+    // and the gamepad are two independent players
+    padjoystickmode =
+        (port != 0 && menuDataStore->getBool("two_player")) ? (uint8_t)(3 - port) : port;
 }
 
 void CPUC64::setPC(uint16_t newPC) {

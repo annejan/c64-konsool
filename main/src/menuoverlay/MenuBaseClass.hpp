@@ -3,16 +3,16 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "MenuDataStore.hpp"
 #include "MenuTypes.hpp"
 #include "menuoverlay/MenuController.hpp"
-#include "MenuDataStore.hpp"
 
 class MenuBaseClass {
    private:
-    
-    MenuBaseClass* parentMenu;
-    MenuDataStore* const menuDataStore = MenuDataStore::getInstance();
-    size_t         selectedItemIndex = 0;
+    MenuBaseClass*       parentMenu;
+    MenuDataStore* const menuDataStore         = MenuDataStore::getInstance();
+    size_t               selectedItemIndex     = 0;
+    size_t               prevSelectedItemIndex = 0;
 
    protected:
     std::string           title;
@@ -39,10 +39,12 @@ class MenuBaseClass {
     std::vector<MenuItem> getItems() const;
 
     // Navigation
-    void navigateBegin();
-    void navigateUp();
-    void navigateDown();
-    size_t getSelectedItemIndex() const;
+    size_t       getCurrentSelectedIndex(void);
+    size_t       getPreviousSelectedIndex(void);
+    virtual void navigateBegin();
+    void         navigateUp();
+    void         navigateDown();
+    size_t       getSelectedItemIndex() const;
 
     // Activate a menu item
     void activateItem(uint16_t id);

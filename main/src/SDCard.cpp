@@ -7,119 +7,38 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <strings.h>
+#include <algorithm>
 #include "Config.hpp"
-#include "images/CbmImage.hpp"
-// #include "driver/sdmmc_default_configs.h"
-#include "driver/sdmmc_host.h"
-#include "driver/sdspi_host.h"
-// #include "driver/spi_common.h"
 #include "esp_err.h"
-// #include "esp_intr_types.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "hal/ldo_types.h"
-// #include "hal/spi_types.h"
-#include "sd_protocol_types.h"
-#include "sd_pwr_ctrl_by_on_chip_ldo.h"
-#include "sdmmc_cmd.h"
-#include "soc/gpio_num.h"
-#include "targets/tanmatsu/tanmatsu_hardware.h"
-
 
 static const char* TAG = "SDCard";
 
-SDCard::SDCard() : initialized(false) {
+SDCard::SDCard() : initialized(false)
+{
 }
 
-SDCard::~SDCard() {
+SDCard::~SDCard()
+{
     if (initialized) {
-        sdspi_host_deinit();
     }
 }
 
-bool SDCard::init() {
-    esp_err_t ret;
+bool SDCard::init()
+{
     if (initialized) {
         return true;
     }
 
-
-#if defined(USE_SDCARD)
-
-    // ESP_LOGI(TAG, "Initialize SDCard power");
-
-    sd_pwr_ctrl_ldo_config_t ldo_config = {
-        .ldo_chan_id = LDO_UNIT_4,  // SDCard powered by VO4
-    };
-    sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
-
-    ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create a new on-chip LDO power control driver");
-        return false;
-    }
-    host.pwr_ctrl_handle = pwr_ctrl_handle;
-
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-
-    ESP_LOGI(TAG, "Setup sdio slot");
-
-    slot_config.clk    = static_cast<gpio_num_t>(BSP_SDCARD_CLK);
-    slot_config.cmd    = static_cast<gpio_num_t>(BSP_SDCARD_CMD);
-    slot_config.d0     = static_cast<gpio_num_t>(BSP_SDCARD_D0);
-    slot_config.d1     = static_cast<gpio_num_t>(BSP_SDCARD_D1);
-    slot_config.d2     = static_cast<gpio_num_t>(BSP_SDCARD_D2);
-    slot_config.d3     = static_cast<gpio_num_t>(BSP_SDCARD_D3);
-    slot_config.width  = 4;
-    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
-    ESP_LOGI(TAG, "Mounting SDcard");
-    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed   = false,
-        .max_files                = 5,
-        .allocation_unit_size     = 16 * 1024,
-        .disk_status_check_enable = false,
-        .use_one_fat              = false,
-    };
-
-    static const char mount_point[] = SD_CARD_MOUNT_POINT;
-
-    ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &mount_card);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to mount SD card: %s", esp_err_to_name(ret));
-        return false;
-    }
-
-    // Get some info about the card
-    sdmmc_card_print_info(stdout, mount_card);
-
-    ESP_LOGI(TAG, "SDcard initialized");
-
-    // Make sure the C64PRG directory exists if it doesn't already exist
-    ESP_LOGI(TAG, "Checking if PRG directory exists");
-    struct stat st;
-    if (stat(SD_CARD_PRG_PATH, &st) != 0) {
-        // directory does not exist, create it
-        if(mkdir(SD_CARD_PRG_PATH, 0775) != 0) {
-            ESP_LOGE(TAG, "Failed to create directory %s", SD_CARD_PRG_PATH);
-            return false;
-        }
-        ESP_LOGE(TAG, "PRG directory has been created: %s", SD_CARD_PRG_PATH);
-    } else if (!S_ISDIR(st.st_mode)) {
-        ESP_LOGE(TAG, "%s is not a directory", SD_CARD_PRG_PATH);
-        return false;
-    } else {
-        ESP_LOGI(TAG, "Found prg directory: %s" , SD_CARD_PRG_PATH);
-    }
-
     initialized = true;
     return true;
-#else
-    return false;
-#endif
 }
 
-void getPath(char* path, uint8_t* ram) {
+void getPath(char* path, uint8_t* ram)
+{
     uint8_t  cury      = ram[0xd6];
     uint8_t  curx      = ram[0xd3];
     uint8_t* cursorpos = ram + 0x0400 + cury * 40 + curx;
@@ -159,7 +78,8 @@ std::string SDCard::fullPath(const char* filename) {
 
 // Reads a .prg into RAM: two byte load address followed by the data. Returns
 // the address one past the last byte written, or 0 if nothing was loaded.
-static uint16_t loadPrgFile(const char* full_path, uint8_t* ram) {
+uint16_t SDCard::readPrg(const char* full_path, uint8_t* ram)
+{
     int fd = open(full_path, O_RDONLY);
     if (fd < 0) return 0;
 
@@ -188,10 +108,11 @@ static uint16_t loadPrgFile(const char* full_path, uint8_t* ram) {
 
 uint16_t SDCard::load(const char* path, uint8_t* ram, size_t len) {
     (void)len;
-    return loadPrgFile(fullPath(path).c_str(), ram);
+    return readPrg(fullPath(path).c_str(), ram);
 }
 
-uint16_t SDCard::load_auto(const char* path, uint8_t* ram, size_t len) {
+uint16_t SDCard::load_auto(const char* path, uint8_t* ram, size_t len)
+{
     (void)path;
     (void)len;
     char file_path[64] = {0};
@@ -200,10 +121,11 @@ uint16_t SDCard::load_auto(const char* path, uint8_t* ram, size_t len) {
     getPath(file_path, ram);
     ESP_LOGI(TAG, "load file %s", file_path);
 
-    return loadPrgFile(fullPath(file_path).c_str(), ram);
+    return readPrg(fullPath(file_path).c_str(), ram);
 }
 
-bool SDCard::save(const char* path, const uint8_t* ram, size_t len) {
+bool SDCard::save(const char* path, const uint8_t* ram, size_t len)
+{
     (void)path;
     (void)len;
     if (!initialized) return false;
@@ -232,41 +154,48 @@ bool SDCard::save(const char* path, const uint8_t* ram, size_t len) {
     return true;
 }
 
-std::vector<std::string> SDCard::listPagedEntries(const char* path, size_t page, size_t pageSize) {
+std::vector<std::string> SDCard::listLoadableFiles(const char* path)
+{
     std::vector<std::string> result;
-
-    if (!initialized) return result;
-
-    ESP_LOGI(TAG, "list paged entries %s, page %zu, pageSize %zu", path, page, pageSize);
+    bool                     truncated = false;
 
     DIR* dir = opendir(path);
-    if (!dir) {
+    if (dir == nullptr) {
         ESP_LOGI(TAG, "cannot open %s", path);
         return result;
     }
 
-    // Only loadable files count towards a page. Letting every directory entry
-    // count would make the page boundaries depend on whatever else happens to
-    // be on the card.
-    size_t         startOffset = page * pageSize;
-    size_t         matched     = 0;
     struct dirent* ent;
     while ((ent = readdir(dir)) != nullptr) {
         std::string name = ent->d_name;
         if (imageFormatFromName(name) == ImageFormat::UNKNOWN) continue;
 
-        if (matched >= startOffset) {
-            result.push_back(name);
-            if (result.size() >= pageSize) break;
+        if (result.size() >= MAX_LISTED_FILES) {
+            truncated = true;
+            break;
         }
-        matched++;
+        result.push_back(name);
+    }
+    closedir(dir);
+
+    if (truncated) {
+        ESP_LOGW(TAG, "%s holds more than %u loadable files, the rest are not listed", path,
+                 static_cast<unsigned>(MAX_LISTED_FILES));
     }
 
-    closedir(dir);
+    // readdir hands entries back in whatever order the filesystem stored them,
+    // so a file sits wherever it was written rather than where it is looked
+    // for. Sorting also keeps the pages steady from one refresh to the next.
+    std::sort(result.begin(), result.end(), [](const std::string& a, const std::string& b) {
+        return strcasecmp(a.c_str(), b.c_str()) < 0;
+    });
+
+    ESP_LOGI(TAG, "%zu loadable files in %s", result.size(), path);
     return result;
 }
 
-bool SDCard::listNextEntry(uint8_t* nextentry, size_t entrySize, bool start) {
+bool SDCard::listNextEntry(uint8_t* nextentry, size_t entrySize, bool start)
+{
     static DIR*           dir = nullptr;
     static struct dirent* ent;
 

@@ -50,10 +50,22 @@ class Drive1541 : public CPU6502 {
     // moved when it changes.
     uint8_t lastStepperPhase = 0;
 
+    // Cycles counted towards the next BYTE READY pulse from the head.
+    unsigned int byteReadyCycles = 0;
+    // Whether the DOS took the last byte off the head. Reading port A moves
+    // the head on by itself, so the byte clock only turns the disk when the
+    // byte went unread.
+    bool         headReadThisByte = false;
+    // The byte last taken off the head. It stays on port A until the next
+    // BYTE READY, so reading twice inside one byte time reads it twice.
+    uint8_t      headByte         = 0;
+
     bool romLoaded = false;
 
     void updateIecOutputs();
     void updateStepper(uint8_t portB);
+    // Runs the head's byte clock and pulses BYTE READY when a byte is due.
+    void countByteReady(unsigned int cycles);
 
     uint8_t readVia1(uint8_t reg);
     uint8_t readVia2(uint8_t reg);
@@ -98,6 +110,17 @@ class Drive1541 : public CPU6502 {
     // Executes instructions until `cycles` is used up. Returns the number of
     // cycles actually consumed, which can overshoot by an instruction.
     unsigned int emulateCycles(unsigned int cycles);
+
+    // Which track the head is over, for tests and probes.
+    unsigned int trackForProbe() const
+    {
+        return controller.currentTrack();
+    }
+
+    unsigned int headPosForProbe() const
+    {
+        return controller.headPosition();
+    }
 
     // Executes exactly one instruction and returns the cycles it took, so the
     // caller can interleave it against the C64.

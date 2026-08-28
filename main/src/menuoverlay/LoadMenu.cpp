@@ -1,4 +1,6 @@
 #include "LoadMenu.hpp"
+#include <dirent.h>
+#include <cstdio>
 #include <string.h>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +11,7 @@
 #include "ExternalCmds.hpp"
 #include "esp_log.h"
 #include "freertos/idf_additions.h"
+#include "SDCard.hpp"
 #include "images/CbmImage.hpp"
 #include "menuoverlay/ImageMenu.hpp"
 #include "menuoverlay/MenuController.hpp"
@@ -33,10 +36,36 @@ void LoadMenu::displayMenu()
 {
     items.clear();
 
-    if (currentPage != 0) {
+    DIR* dir = opendir(SD_CARD_PRG_PATH);
+    if (dir == nullptr) {
+        MenuItem item = MenuItem();
+        item.id       = 0;
+        item.title    = "(No SD card mounted)";
+        item.type     = MenuItemType::SPACER;
+        items.push_back(item);
+        return;
+    }
+    closedir(dir);
+
+    if (entries.empty()) {
+        MenuItem item = MenuItem();
+        item.id       = 0;
+        item.title    = "(no files found)";
+        item.type     = MenuItemType::SPACER;
+        items.push_back(item);
+        return;
+    }
+
+    size_t pages = pageCount();
+    if (currentPage >= pages) currentPage = 0;
+
+    char label[40];
+    if (pages > 1) {
+        snprintf(label, sizeof(label), "=== Prev page (%u/%u) ===", static_cast<unsigned>(currentPage + 1),
+                 static_cast<unsigned>(pages));
         MenuItem prevPageItem = MenuItem();
         prevPageItem.id       = 0xfffe;
-        prevPageItem.title    = "=== Prev Page ===";
+        prevPageItem.title    = label;
         prevPageItem.type     = MenuItemType::ACTION;
         prevPageItem.action   = [this](MenuItem* item) {
             (void)item;
@@ -45,12 +74,10 @@ void LoadMenu::displayMenu()
         items.push_back(prevPageItem);
     }
 
-    std::vector<std::string> entries = sdcard->listPagedEntries(SD_CARD_PRG_PATH, currentPage, pageSize);
-    ESP_LOGI(TAG, "page %u holds %zu files", currentPage, entries.size());
-
+    size_t   start    = static_cast<size_t>(currentPage) * pageSize;
     uint16_t id_count = 0;
-    for (size_t i = 0; i < entries.size(); i++) {
-        const std::string& filename = entries[i];
+    for (size_t i = start; i < entries.size() && i < start + pageSize; i++) {
+        const std::string filename = entries[i];
 
         MenuItem item = MenuItem();
         item.id       = id_count++;
@@ -63,12 +90,12 @@ void LoadMenu::displayMenu()
         items.push_back(item);
     }
 
-    // A short page is the last page, so only offer to go further when this
-    // one was filled.
-    if (entries.size() == pageSize) {
+    if (pages > 1) {
+        snprintf(label, sizeof(label), "=== Next page (%u/%u) ===", static_cast<unsigned>(currentPage + 1),
+                 static_cast<unsigned>(pages));
         MenuItem nextPageItem = MenuItem();
         nextPageItem.id       = 0xffff;
-        nextPageItem.title    = "=== Next Page ===";
+        nextPageItem.title    = label;
         nextPageItem.type     = MenuItemType::ACTION;
         nextPageItem.action   = [this](MenuItem* item) {
             (void)item;
@@ -76,30 +103,33 @@ void LoadMenu::displayMenu()
         };
         items.push_back(nextPageItem);
     }
+}
 
-    if (items.empty()) {
-        MenuItem empty = MenuItem();
-        empty.id       = 0;
-        empty.title    = "(no files found)";
-        empty.type     = MenuItemType::SPACER;
-        items.push_back(empty);
-    }
+void LoadMenu::refreshEntries()
+{
+    entries = SDCard::listLoadableFiles(SD_CARD_PRG_PATH);
+}
+
+size_t LoadMenu::pageCount() const
+{
+    if (entries.empty()) return 1;
+    return (entries.size() + pageSize - 1) / pageSize;
 }
 
 void LoadMenu::toNextPage()
 {
-    nextPage++;
-    navigateBegin();
-    ESP_LOGI(TAG, "next page %u", nextPage);
+    // Wrapping means a file at the end of a long listing is one step back
+    // from the first page rather than a walk through every page in between.
+    nextPage = static_cast<uint16_t>((currentPage + 1) % pageCount());
+    // Deliberately not navigateBegin(): that override jumps back to the first
+    // page, which is right when entering the menu and wrong when paging.
+    MenuBaseClass::navigateBegin();
 }
 
 void LoadMenu::toPrevPage()
 {
-    if (nextPage > 0) {
-        nextPage--;
-        navigateBegin();
-    }
-    ESP_LOGI(TAG, "previous page %u", nextPage);
+    nextPage = static_cast<uint16_t>((currentPage + pageCount() - 1) % pageCount());
+    MenuBaseClass::navigateBegin();
 }
 
 void LoadMenu::openFile(const std::string& filename)
@@ -138,7 +168,7 @@ void LoadMenu::openImage(const std::string& filename)
         imageMenu->init();
     }
 
-    if (!imageMenu->openImage(filename)) {
+    if (!imageMenu->openImage(SDCard::fullPath(filename.c_str()))) {
         ESP_LOGE(TAG, "no loadable programs in %s", filename.c_str());
         // openImage() still leaves a readable placeholder in the submenu, so
         // show it rather than silently ignoring the selection.
@@ -146,9 +176,23 @@ void LoadMenu::openImage(const std::string& filename)
     menuController->setCurrentMenu(imageMenu);
 }
 
+// Entering the menu starts again at the first page and rereads the directory,
+// so a card swapped while the menu was closed shows up.
+void LoadMenu::navigateBegin()
+{
+    needsRefresh = true;
+    nextPage     = 0;
+    MenuBaseClass::navigateBegin();
+}
+
 void LoadMenu::update()
 {
-    if (currentPage != nextPage) {
+    if (needsRefresh) {
+        needsRefresh = false;
+        refreshEntries();
+        currentPage = nextPage;
+        displayMenu();
+    } else if (currentPage != nextPage) {
         currentPage = nextPage;
         displayMenu();
     }
@@ -158,6 +202,9 @@ bool LoadMenu::init()
 {
     sdcard->init();
     ESP_LOGI(TAG, "initializing load menu");
+    needsRefresh = true;
+    currentPage  = 0;
+    nextPage     = 0;
     displayMenu();
     return true;
 }

@@ -25,16 +25,21 @@ idf_component_register(
 		"src/menuoverlay/MenuBaseClass.cpp"
 		"src/menuoverlay/mainMenu.cpp"
 		"src/menuoverlay/LoadMenu.cpp"
+		"src/menuoverlay/UsbLoadMenu.cpp"
 		"src/menuoverlay/ImageMenu.cpp"
 		"src/menuoverlay/MenuDataStore.cpp"
 		"src/sid/sid.cpp"
 		"src/sid/i2s.cpp"
+		"sdcard.c"
+		"global_event_handler.c"
+		"icons.c"
 	PRIV_REQUIRES
 		esp_lcd
 		esp_adc
 		esp_driver_ppa
 		fatfs
 		nvs_flash
+		hidhost
 		badge-bsp
 	INCLUDE_DIRS
 		"."

@@ -5,11 +5,20 @@
 #include "DisplayDriver.hpp"
 #include "MainMenu.hpp"
 // #include "esp_log.h"
+#include "esp_lcd_panel_ops.h"
+#include "icons.h"
 #include "menuoverlay/MenuDataStore.hpp"
 #include "menuoverlay/MenuTypes.hpp"
+#include "pax_fonts.h"
 #include "pax_gfx.h"
+#include "pax_text.h"
 
 __attribute__((unused)) static const char* TAG = "MenuController";
+
+extern "C" {
+#include "bsp/audio.h"
+extern uint8_t* fb_memory;
+}
 
 MenuController::MenuController()
 {
@@ -18,6 +27,7 @@ MenuController::MenuController()
 
 void MenuController::init(C64Emu* c64emu)
 {
+    load_icons();
     MenuController::c64emu = c64emu;
     // Setup the main menu
     rootMenu               = new MainMenu("Main Menu", nullptr, this);
@@ -26,13 +36,14 @@ void MenuController::init(C64Emu* c64emu)
     DisplayDriver* driver  = c64emu->cpu.vic->getDriver();
     fb                     = driver->getMenuFb();
     // HID Pax framebuffer
-    pax_buf_init(fb, NULL, 640, 400, PAX_BUF_16_565RGB);
-    pax_buf_reversed(fb, true);
-    pax_background(fb, 0xff000000);
+    pax_buf_init(fb, fb_memory, 800, 480, PAX_BUF_16_565RGB);
+    pax_buf_reversed(fb, false);
+    pax_background(fb, 0xFF000000);
 
     // Initialize the menus
     rootMenu->init();
 
+    visible = true;
     driver->enableMenuOverlay(visible);
 
     // Call render function to initialize the menu overlay
@@ -44,37 +55,97 @@ void MenuController::render()
     // Allow the current menu to update itself
     currentMenu->update();
 
-    // Clear the screen
-    pax_background(fb, 0xff000000);
-    // Draw the menu items
-    pax_draw_rect(fb, 0xffffffff, 0, 0, 640, 40);
-    pax_draw_text(fb, 0xff000000, pax_font_sky_mono, 16, 10, 10, currentMenu->getTitle().c_str());
+    bool full_update = false;
+
+    if (previousMenu != currentMenu) {
+        previousMenu = currentMenu;
+        full_update  = true;
+    }
+
+    int currentJoystick = menuDataStore->getInt("kb_joystick_port", 1);
+
+    if (full_update) {
+        pax_background(fb, 0xFFFFFFFF);
+        pax_draw_rect(fb, 0xFF002255, 0, 0, 800, 40);
+        pax_draw_text(fb, 0xFFFFFFFF, pax_font_saira_regular, 18, 10, 10, currentMenu->getTitle().c_str());
+    }
 
     const auto& items = currentMenu->getItems();
     // ESP_LOGI(TAG, "Menu items: %d", items.size());
     size_t      i     = 0;
     for (const auto& item : items) {
-        uint32_t    color = currentMenu->getSelectedItemIndex() == i ? 0xff0000ff : 0xffffffff;
-        std::string title;
-        switch (item.type) {
-            case MenuItemType::TOGGLE: {
-                bool checked = menuDataStore->getBool(item.value_name, false);
-                title        = ("--> " + item.title + (checked ? "On" : "Off"));
-                break;
+        if (full_update || i == currentMenu->getPreviousSelectedIndex() ||
+            i == currentMenu->getCurrentSelectedIndex()) {
+            uint32_t    color = currentMenu->getSelectedItemIndex() == i ? 0xFFFF0000 : 0xFF002255;
+            std::string title;
+            switch (item.type) {
+                case MenuItemType::TOGGLE: {
+                    bool checked = menuDataStore->getBool(item.value_name, false);
+                    title        = (((currentMenu->getSelectedItemIndex() == i) ? "> " : "  ") + item.title +
+                                    (checked ? "On" : "Off"));
+                    break;
+                }
+                case MenuItemType::SPACER: {
+                    title = "";
+                    break;
+                }
+                default: {
+                    title = (((currentMenu->getSelectedItemIndex() == i) ? "> " : "  ") + item.title);
+                    break;
+                }
             }
-            case MenuItemType::SPACER: {
-                title        = "--------------------";
-                break;
-            }
-            default: {
-                title = ("--> " + item.title);
-                break;
-            }
+            // ESP_LOGI(TAG, "Menu Item %d: %s", i, title.c_str());
+            pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + i * 20, 800, 20);
+            pax_draw_text(fb, color, pax_font_saira_regular, 18, 30, 60 + i * 20, title.c_str());
         }
-        // ESP_LOGI(TAG, "Menu Item %d: %s", i, title.c_str());
-        pax_draw_text(fb, color, pax_font_sky_mono, 16, 30, 60 + i * 20, title.c_str());
         ++i;
     }
+
+    if (currentMenu == rootMenu && (full_update || prevJoystick != currentJoystick)) {
+        i += 2;
+        pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + i * 20, 800, 480 - 60 - i * 20);
+        pax_draw_line(fb, 0xFFFF0000, 0, 60 + i * 20, 800, 60 + i * 20);
+        i += 1;
+        pax_draw_image(fb, get_icon(ICON_F6), 10, 60 + i * 20);
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
+                      "Switch between this menu and the Commodore 64");
+        i += 1;
+        pax_draw_image(fb, get_icon(ICON_F5), 10, 60 + i * 20);
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
+                      ("Switch joystick emulation between joystick port 1 and 2, current port: " +
+                       std::to_string(currentJoystick))
+                          .c_str());
+
+        i += 2;
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      "To enable joystick emulation set 'Joystick emulation' to 'On' in this menu.\n"
+                      "With 'Two players' on, the keyboard joystick keeps the port shown above and a USB\n"
+                      "gamepad takes the other one, so two people can play at the same time.\n"
+                      "You can change the volume of the speaker and headphone output using the volume up\n"
+                      "and down keys on the right side of the device.\n");
+        i += 6;
+
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - Loading D64 images is not supported, you can only load PRG images.");
+
+        i += 1;
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - Connecting an USB keyboard to the USB-A port is also supported");
+        i += 1;
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - Joystick emulation uses left shift for fire, arrow keys");
+        i += 1;
+        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
+                      " - ('/' and right shift input left + up and right + up respectively)");
+
+        prevJoystick = currentJoystick;
+    }
+}
+
+void MenuController::setCurrentMenu(MenuBaseClass* menu)
+{
+    currentMenu = menu;
+    menu->navigateBegin();
 }
 
 void MenuController::show()

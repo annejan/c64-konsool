@@ -42,6 +42,9 @@ void Drive1541::reset()
     // reset() flushes anything pending before parking the head.
     controller.reset();
     lastStepperPhase = 0;
+    byteReadyCycles  = 0;
+    headReadThisByte = false;
+    headByte         = 0;
     cpuhalted        = false;
 
     if (lines != nullptr) {
@@ -74,6 +77,11 @@ void Drive1541::updateIecOutputs()
     // DATA down until the drive has noticed an ATN it was sent.
     lines->driveClk  = clkOut;
     lines->driveData = dataOut || (atna != lines->atnLow());
+
+    // ATN also runs to VIA 1's CA1 pin. The gate above answers the bus on its
+    // own, but it is this interrupt that gets the DOS out of its idle loop to
+    // find out what it was called for.
+    via1.setCa1(lines->atnLow());
 }
 
 // The stepper turns through four phases; which way it went tells the head
@@ -110,9 +118,18 @@ uint8_t Drive1541::readVia2(uint8_t reg)
     switch (reg & 0x0f) {
         case Via6522::REG_PRA:
         case Via6522::REG_PRA_NH:
-            // Port A is the head. Reading it takes the next byte off the
-            // track, which is what advances the "rotation".
-            return controller.readGcrByte();
+            // Port A is the head. The byte sits there until the next one
+            // arrives, so reading the port again inside the same byte time
+            // hands back the same byte rather than pulling the next one off
+            // the track. Letting every read take a byte lets the head outrun
+            // the disk: the DOS polls this port while it hunts for a sync
+            // mark, far faster than bytes actually arrive, and the head then
+            // races past every other sector.
+            if (!headReadThisByte) {
+                headReadThisByte = true;
+                headByte         = controller.readGcrByte();
+            }
+            return headByte;
 
         case Via6522::REG_PRB: {
             // Sync is active low, and the write protect sense sits alongside.
@@ -220,7 +237,54 @@ unsigned int Drive1541::stepInstruction()
     uint8_t before = numofcycles;
     execute(getMem(pc++));
     uint8_t used = static_cast<uint8_t>(numofcycles - before);
-    return used > 0 ? used : 1;
+    if (used == 0) used = 1;
+
+    countByteReady(used);
+    return used;
+}
+
+// The head shifts a bit at a time and the controller pulses BYTE READY on
+// every eighth one. That line is wired to the 6502's SO pin, which sets the
+// overflow flag from outside the instruction stream, and it is the only way
+// the DOS knows a byte has arrived: it waits with "BVC *", clears the flag
+// with CLV and then reads the head. Without it the drive sits in that branch
+// forever the first time it touches the disk, which is exactly what a LOAD
+// does once the command has been sent.
+void Drive1541::countByteReady(unsigned int cycles)
+{
+    // Nothing turns under the head unless there is a disk and the motor is on.
+    if (!controller.hasDisk()) return;
+    if ((via2.prb & via2.ddrb & VIA2_MOTOR) == 0) return;
+
+
+    // One byte is eight bit cells, and the bit rate is what the speed zone
+    // selects: the outer tracks hold more, so their bytes come round sooner.
+    static const unsigned int cyclesPerByte[4] = {32, 30, 28, 26};
+    unsigned int              perByte          = cyclesPerByte[controller.speedZone() & 3];
+
+    byteReadyCycles += cycles;
+    while (byteReadyCycles >= perByte) {
+        byteReadyCycles -= perByte;
+        // A byte the DOS never collected still passes under the head.
+        if (!headReadThisByte) controller.rotate();
+        headReadThisByte = false;
+
+        // BYTE READY only reaches the SO pin while the DOS holds the gate
+        // open. That gate is VIA 2's CA2, which the peripheral control
+        // register drives high with bits 3 to 1 set; the DOS opens it around
+        // the few instructions that take a byte off the head and shuts it
+        // again straight after, because an overflow flag arriving unasked
+        // ruins every other branch it makes. The gate stops the flag, not the
+        // disk: the motor keeps turning either way, and stopping the rotation
+        // with it means a sync mark never comes round and every read ends in
+        // "no sync found".
+        //
+        // The hardware also holds the shift register while a sync mark is
+        // passing, so no byte is ever handed over from inside one. That is
+        // what makes the first byte after a sync the header mark the DOS
+        // compares against.
+        if ((via2.pcr & 0x0e) == 0x0e && !controller.syncFound()) vflag = true;
+    }
 }
 
 unsigned int Drive1541::emulateCycles(unsigned int cycles)

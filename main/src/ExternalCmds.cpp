@@ -16,6 +16,9 @@
 */
 #include "ExternalCmds.hpp"
 #include <esp_log.h>
+#include <fcntl.h>
+#include <cstring>
+#include <sys/unistd.h>
 #include "C64Emu.hpp"
 #include "Config.hpp"
 #include "listactions.h"
@@ -27,6 +30,7 @@
 #include "images/D64Image.hpp"
 #include "images/T64Image.hpp"
 #include <fcntl.h>
+#include <cstring>
 #include <unistd.h>
 #include "drive/Drive1541.hpp"
 
@@ -148,52 +152,49 @@ bool ExternalCmds::loadPrg(const char* filename) {
 
 bool ExternalCmds::loadFile(const char* filename) {
     ESP_LOGI(TAG, "load %s from sdcard...", filename);
-    c64emu->cpu.cpuhalted = true;
-
     if (!sdcard.init()) {
         ESP_LOGE(TAG, "error init sdcard");
+        c64emu->cpu.cpuhalted = true;
         finishLoad(false, true);
         return false;
     }
+    return loadFileFromPath(SDCard::fullPath(filename).c_str());
+}
 
-    ImageFormat format = imageFormatFromName(filename);
+bool ExternalCmds::loadFileFromPath(const char* fullpath) {
+    ImageFormat format = imageFormatFromName(fullpath);
     if (format == ImageFormat::T64 || format == ImageFormat::D64) {
         // No entry was picked, so load the first program in the container.
-        return loadImageEntry(filename, 0);
+        return loadImageEntryFromPath(fullpath, 0);
     }
-    if (format != ImageFormat::PRG) {
-        ESP_LOGE(TAG, "unsupported file type: %s", filename);
-        finishLoad(false, true);
-        return false;
+    if (format == ImageFormat::PRG) {
+        return loadPrgFromPath(fullpath);
     }
 
-    bool     fileloaded = false;
-    uint16_t addr       = sdcard.load(filename, ram);
-    if (addr == 0) {
-        ESP_LOGI(TAG, "file not found or empty: %s", filename);
-    } else {
-        setVarTab(addr);
-        fileloaded = true;
-    }
-
-    finishLoad(fileloaded, false);
-    return fileloaded;
+    ESP_LOGE(TAG, "unsupported file type: %s", fullpath);
+    c64emu->cpu.cpuhalted = true;
+    finishLoad(false, true);
+    return false;
 }
 
 bool ExternalCmds::loadImageEntry(const char* filename, uint16_t index) {
-    ESP_LOGI(TAG, "load entry %u of %s", static_cast<unsigned>(index), filename);
-    c64emu->cpu.cpuhalted = true;
-
     if (!sdcard.init()) {
         ESP_LOGE(TAG, "error init sdcard");
+        c64emu->cpu.cpuhalted = true;
         finishLoad(false, true);
         return false;
     }
+    return loadImageEntryFromPath(SDCard::fullPath(filename).c_str(), index);
+}
+
+bool ExternalCmds::loadImageEntryFromPath(const char* fullpath, uint16_t index) {
+    ESP_LOGI(TAG, "load entry %u of %s", static_cast<unsigned>(index), fullpath);
+    c64emu->cpu.cpuhalted = true;
 
     T64Image  t64;
     D64Image  d64;
     CbmImage* image = nullptr;
-    switch (imageFormatFromName(filename)) {
+    switch (imageFormatFromName(fullpath)) {
         case ImageFormat::T64:
             image = &t64;
             break;
@@ -201,14 +202,13 @@ bool ExternalCmds::loadImageEntry(const char* filename, uint16_t index) {
             image = &d64;
             break;
         default:
-            ESP_LOGE(TAG, "not a container: %s", filename);
+            ESP_LOGE(TAG, "not a container: %s", fullpath);
             finishLoad(false, true);
             return false;
     }
 
-    std::string path = SDCard::fullPath(filename);
-    if (!image->open(path.c_str())) {
-        ESP_LOGE(TAG, "cannot read image %s", path.c_str());
+    if (!image->open(fullpath)) {
+        ESP_LOGE(TAG, "cannot read image %s", fullpath);
         finishLoad(false, true);
         return false;
     }
@@ -220,7 +220,7 @@ bool ExternalCmds::loadImageEntry(const char* filename, uint16_t index) {
     if (fileloaded) {
         setVarTab(endAddr);
     } else {
-        ESP_LOGI(TAG, "cannot extract entry %u of %s", static_cast<unsigned>(index), filename);
+        ESP_LOGI(TAG, "cannot extract entry %u of %s", static_cast<unsigned>(index), fullpath);
     }
 
     finishLoad(fileloaded, false);
@@ -291,22 +291,29 @@ bool ExternalCmds::setTrueDriveEmulation(bool enabled) {
 }
 
 bool ExternalCmds::mountDisk(const char* filename) {
-    unmountDisk();
-
     if (!sdcard.init()) {
         ESP_LOGE(TAG, "error init sdcard");
         return false;
     }
-    if (imageFormatFromName(filename) != ImageFormat::D64) {
-        ESP_LOGE(TAG, "%s is not a disk image", filename);
+    return mountDiskFromPath(SDCard::fullPath(filename).c_str());
+}
+
+bool ExternalCmds::mountDiskFromPath(const char* fullpath) {
+    unmountDisk();
+
+    if (imageFormatFromName(fullpath) != ImageFormat::D64) {
+        ESP_LOGE(TAG, "%s is not a disk image", fullpath);
         return false;
     }
 
-    std::string path = SDCard::fullPath(filename);
-    if (!disk.open(path.c_str())) {
-        ESP_LOGE(TAG, "cannot read disk image %s", path.c_str());
+    if (!disk.open(fullpath)) {
+        ESP_LOGE(TAG, "cannot read disk image %s", fullpath);
         return false;
     }
+
+    // Menus and logs want the file name, not the whole path it came from.
+    const char* name = strrchr(fullpath, '/');
+    name             = (name != nullptr) ? name + 1 : fullpath;
 
     // Set the DOS emulation up whichever drive is in charge. It only answers
     // while the traps are installed, and having it ready means switching the
@@ -328,8 +335,8 @@ bool ExternalCmds::mountDisk(const char* filename) {
             return false;
         }
         mounted     = true;
-        mountedName = filename;
-        ESP_LOGI(TAG, "mounted %s in the emulated 1541", filename);
+        mountedName = name;
+        ESP_LOGI(TAG, "mounted %s in the emulated 1541", name);
         return true;
     }
 
@@ -348,8 +355,8 @@ bool ExternalCmds::mountDisk(const char* filename) {
     }
 
     mounted     = true;
-    mountedName = filename;
-    ESP_LOGI(TAG, "mounted %s as drive 8", filename);
+    mountedName = name;
+    ESP_LOGI(TAG, "mounted %s as drive 8", name);
     return true;
 }
 
@@ -379,6 +386,26 @@ void ExternalCmds::unmountDisk() {
     mounted = false;
     mountedName.clear();
     ESP_LOGI(TAG, "unmounted drive 8");
+}
+
+bool ExternalCmds::loadPrgFromPath(const char* fullpath) {
+    ESP_LOGI(TAG, "load from %s", fullpath);
+    c64emu->cpu.cpuhalted = true;
+    bool fileloaded = false;
+
+    uint16_t addr = SDCard::readPrg(fullpath, ram);
+    if (addr != 0) {
+        setVarTab(addr);
+        fileloaded = true;
+    } else {
+        ESP_LOGE(TAG, "failed to load %s", fullpath);
+    }
+
+    uint16_t action_addr = src_loadactions_prg[0] + (src_loadactions_prg[1] << 8);
+    memcpy(ram + action_addr, src_loadactions_prg + 2, src_loadactions_prg_len - 2);
+    c64emu->cpu.exeSubroutine(action_addr, fileloaded ? 1 : 0, 0, 0);
+    c64emu->cpu.cpuhalted = false;
+    return fileloaded;
 }
 
 void ExternalCmds::reset() {
