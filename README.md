@@ -150,6 +150,17 @@ Sectors are GCR encoded on the fly into a track image, and the head advances
 one byte each time the drive reads port A of VIA 2, which is Frodo's model
 too.
 
+Writing goes the same way round. With port A driving, a byte written to it
+lands on the track under the head. When the head steps away, the motor stops
+or the disk is taken out, the track is decoded back into sectors and written
+to the image. Only sectors whose header still reads correctly are written
+back, so a garbled track cannot scribble over a real one. Frodo does not do
+this at all: it patches the drive ROM so writes bypass GCR entirely. Whether
+the real DOS ROM's write routine drives this the way it expects has not been
+confirmed on hardware yet, so treat saving through the 1541 as the least
+proven part of the emulator and keep a spare copy of any image you care
+about.
+
 ### What it still will not do
 
 - **Copy protection.** Schemes that measure sync lengths, look for weak bits
@@ -157,9 +168,6 @@ too.
   VICE does and this does not. It would also need G64 images: a .d64 has
   already thrown away the information that protection relies on, so no
   emulator can recover it from one.
-- **Writing through the drive.** The head is read only here, so saving needs
-  1541 emulation switched off. Frodo has the same limitation and patches the
-  ROM around it.
 - **Anything but a 1541.** No 1571, no 1581, one drive only, always device 8.
 
 ### Loading a .prg from BASIC

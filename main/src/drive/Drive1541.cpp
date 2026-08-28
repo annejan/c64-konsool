@@ -39,6 +39,7 @@ void Drive1541::reset()
     memset(ram, 0, sizeof(ram));
     via1.reset();
     via2.reset();
+    // reset() flushes anything pending before parking the head.
     controller.reset();
     lastStepperPhase = 0;
     cpuhalted        = false;
@@ -136,10 +137,27 @@ void Drive1541::writeVia1(uint8_t reg, uint8_t value)
 
 void Drive1541::writeVia2(uint8_t reg, uint8_t value)
 {
-    via2.write(reg, value);
     uint8_t r = reg & 0x0f;
+
+    // Port A is the head. With the port driving, writing it puts a byte onto
+    // the track; the drive only ever drives the whole port, since the head
+    // reads or writes a byte at a time and nothing else is wired to it.
+    if ((r == Via6522::REG_PRA || r == Via6522::REG_PRA_NH) && via2.ddra == 0xff) {
+        controller.writeGcrByte(value);
+    }
+
+    via2.write(reg, value);
+
     if (r == Via6522::REG_PRB || r == Via6522::REG_DDRB) {
         updateStepper(static_cast<uint8_t>(via2.prb & via2.ddrb));
+
+        // The motor stopping is the drive saying it has finished with this
+        // track, so anything written gets pushed out rather than waiting for
+        // the head to step.
+        bool motorOn = (via2.prb & via2.ddrb & VIA2_MOTOR) != 0;
+        if (!motorOn) {
+            controller.flush();
+        }
     }
 }
 

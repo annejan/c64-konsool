@@ -38,8 +38,11 @@ class DiskController {
     uint8_t      id2         = 0;
 
     uint8_t gcrTrack[GCR_TRACK_SIZE];
+    bool    trackDirty = false;
 
     void loadTrack();
+    // Writes any changed sectors of the current track back to the image.
+    void flushTrack();
 
    public:
     DiskController();
@@ -67,10 +70,20 @@ class DiskController {
     // there is no disk, which is what an empty drive sounds like.
     uint8_t readGcrByte();
 
+    // Writes the byte under the head and moves on, as the head does when the
+    // drive has port A driving. The track is written back to the image when
+    // the head leaves it.
+    void writeGcrByte(uint8_t value);
+
+    // Pushes any pending changes out. Called when the head steps away, when
+    // the disk is taken out, and on reset.
+    void flush();
+
     // True when the head is sitting on a sync mark.
     bool syncFound() const;
 
-    // Port B bit 4 of VIA 2: low means write protected.
+    // Port B bit 4 of VIA 2: low means write protected. A read only image, or
+    // no image at all, reports protected.
     uint8_t writeProtectBit() const;
 
     // Speed zone for the current track, as the drive would select it.

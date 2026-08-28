@@ -36,6 +36,7 @@ class MemDisk : public DiskImage {
    public:
     std::vector<uint8_t> bytes;
     unsigned int         trackCount = 35;
+    bool                 readOnly   = true;
 
     MemDisk()
     {
@@ -68,9 +69,16 @@ class MemDisk : public DiskImage {
         memcpy(buf, &bytes[offset(track, sector)], CBM_SECTOR_SIZE);
         return true;
     }
+    bool writeSector(unsigned int track, unsigned int sector, const uint8_t* buf) override
+    {
+        if (readOnly) return false;
+        if (track < 1 || track > trackCount || sector >= sectorsPerTrack(track)) return false;
+        memcpy(&bytes[offset(track, sector)], buf, CBM_SECTOR_SIZE);
+        return true;
+    }
     bool writable() const override
     {
-        return false;
+        return !readOnly;
     }
     unsigned int tracks() const override
     {
@@ -381,6 +389,149 @@ static void testResetKeepsTheDisk()
     CHECK(first == 0xff, "the head read $%02x after a reset, expected a sync byte", first);
 }
 
+static void testWriteProtectSense()
+{
+    printf("Controller: write protect reflects whether the image can be written\n");
+    MemDisk        disk;
+    DiskController controller;
+
+    disk.readOnly = true;
+    controller.setDisk(&disk);
+    CHECK(controller.writeProtectBit() == 0x00, "a read only image did not report protected");
+
+    disk.readOnly = false;
+    controller.setDisk(&disk);
+    CHECK(controller.writeProtectBit() == 0x10, "a writable image reported protected");
+
+    DiskController empty;
+    CHECK(empty.writeProtectBit() == 0x00, "an empty drive did not report protected");
+}
+
+static void testHeadWritesReachTheImage()
+{
+    printf("Controller: bytes written by the head land in the image\n");
+    MemDisk disk;
+    disk.readOnly = false;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    // Build the sector the drive would lay down: same header, new data.
+    uint8_t replacement[CBM_SECTOR_SIZE];
+    for (unsigned int i = 0; i < CBM_SECTOR_SIZE; i++) {
+        replacement[i] = static_cast<uint8_t>(0xa0 + (i & 0x0f));
+    }
+    uint8_t encoded[GCR_SECTOR_SIZE];
+    gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
+
+    // The head starts at the beginning of the track, so writing the encoded
+    // sector straight through lands it on sector 0.
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(encoded[i]);
+    }
+
+    // Nothing reaches the image until the head is done with the track.
+    uint8_t before[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, before);
+    CHECK(memcmp(before, replacement, CBM_SECTOR_SIZE) != 0, "the image changed before any flush");
+
+    controller.flush();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    CHECK(disk.readSector(18, 0, after), "could not read the sector back");
+    CHECK(memcmp(after, replacement, CBM_SECTOR_SIZE) == 0, "the written sector did not reach the image");
+
+    // Other sectors on the track are left alone.
+    uint8_t neighbour[CBM_SECTOR_SIZE];
+    disk.readSector(18, 1, neighbour);
+    bool untouched = false;
+    for (unsigned int i = 0; i < CBM_SECTOR_SIZE; i++) {
+        if (neighbour[i] != replacement[i]) {
+            untouched = true;
+            break;
+        }
+    }
+    CHECK(untouched, "writing one sector changed its neighbour");
+}
+
+static void testHeadWriteStepsFlush()
+{
+    printf("Controller: stepping away writes the track back on the way out\n");
+    MemDisk disk;
+    disk.readOnly = false;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    uint8_t replacement[CBM_SECTOR_SIZE];
+    memset(replacement, 0x5c, sizeof(replacement));
+    uint8_t encoded[GCR_SECTOR_SIZE];
+    gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(encoded[i]);
+    }
+
+    // Two half steps take the head to the next track, and the changes have to
+    // go with it rather than being dropped.
+    controller.moveHeadIn();
+    controller.moveHeadIn();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, after);
+    CHECK(memcmp(after, replacement, CBM_SECTOR_SIZE) == 0, "stepping away lost the written data");
+}
+
+static void testWriteRefusedOnReadOnlyImage()
+{
+    printf("Controller: a read only image is never written to\n");
+    MemDisk disk;
+    disk.readOnly = true;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    uint8_t original[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, original);
+
+    uint8_t replacement[CBM_SECTOR_SIZE];
+    memset(replacement, 0x77, sizeof(replacement));
+    uint8_t encoded[GCR_SECTOR_SIZE];
+    gcrEncodeSector(replacement, 18, 0, 'I', 'D', encoded);
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(encoded[i]);
+    }
+    controller.flush();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, after);
+    CHECK(memcmp(after, original, CBM_SECTOR_SIZE) == 0, "a read only image was written to");
+}
+
+static void testGarbledTrackIsNotWrittenBack()
+{
+    printf("Controller: a garbled track does not scribble over the image\n");
+    MemDisk disk;
+    disk.readOnly = false;
+
+    DiskController controller;
+    controller.setDisk(&disk);
+
+    uint8_t original[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, original);
+
+    // Write noise over the start of the track, wrecking the header and the
+    // data block. Nothing recognisable is there, so nothing should be written
+    // back rather than a wrong guess landing on a real sector.
+    for (unsigned int i = 0; i < GCR_SECTOR_SIZE; i++) {
+        controller.writeGcrByte(static_cast<uint8_t>(0x33));
+    }
+    controller.flush();
+
+    uint8_t after[CBM_SECTOR_SIZE];
+    disk.readSector(18, 0, after);
+    CHECK(memcmp(after, original, CBM_SECTOR_SIZE) == 0, "a garbled track overwrote a real sector");
+}
+
 static void testSpeedZones()
 {
     printf("Controller: speed zone follows the track number\n");
@@ -550,6 +701,79 @@ static void testDriveCpuRuns()
     }
 }
 
+// A second test ROM, this one putting the head into write mode and laying two
+// bytes down:
+//
+//      C000  78         sei
+//      C001  a2 ff      ldx #$ff
+//      C003  9a         txs
+//      C004  a9 ff      lda #$ff
+//      C006  8d 03 1c   sta $1c03      ; VIA 2 DDRA, port A drives, so writing
+//      C009  a9 ab      lda #$ab
+//      C00b  8d 01 1c   sta $1c01      ; onto the track
+//      C00e  a9 cd      lda #$cd
+//      C010  8d 01 1c   sta $1c01
+//      C013  a9 42      lda #$42
+//      C015  8d 10 00   sta $0010      ; marker
+//      C018  4c 18 c0   done: jmp done
+static void buildWriteRom(uint8_t* rom)
+{
+    memset(rom, 0xff, Drive1541::ROM_SIZE);
+
+    static const uint8_t program[] = {
+        0x78,              // sei
+        0xa2, 0xff,        // ldx #$ff
+        0x9a,              // txs
+        0xa9, 0xff,        // lda #$ff
+        0x8d, 0x03, 0x1c,  // sta $1c03
+        0xa9, 0xab,        // lda #$ab
+        0x8d, 0x01, 0x1c,  // sta $1c01
+        0xa9, 0xcd,        // lda #$cd
+        0x8d, 0x01, 0x1c,  // sta $1c01
+        0xa9, 0x42,        // lda #$42
+        0x8d, 0x10, 0x00,  // sta $0010
+        0x4c, 0x18, 0xc0,  // jmp $c018
+    };
+    memcpy(rom, program, sizeof(program));
+    rom[Drive1541::ROM_SIZE - 4] = 0x00;
+    rom[Drive1541::ROM_SIZE - 3] = 0xc0;
+}
+
+static void testDriveCpuWritesTheHead()
+{
+    printf("Drive: the CPU can put the head into write mode and lay bytes down\n");
+
+    static uint8_t rom[Drive1541::ROM_SIZE];
+    buildWriteRom(rom);
+
+    MemDisk disk;
+    disk.readOnly = false;
+
+    IecLines  lines;
+    Drive1541 drive;
+    lines.reset();
+    drive.setLines(&lines);
+    drive.setRom(rom);
+    drive.setDisk(&disk);
+    drive.reset();
+
+    for (int i = 0; i < 50 && drive.getMem(0x0010) != 0x42; i++) {
+        drive.emulateCycles(50);
+    }
+    CHECK(drive.getMem(0x0010) == 0x42, "the write program never finished");
+
+    // The head is now two bytes along. Reading the rest of the way round
+    // brings it back to where the writes landed.
+    DiskController& controller = drive.disk();
+    for (unsigned int i = 0; i < GCR_TRACK_SIZE - 2; i++) {
+        controller.readGcrByte();
+    }
+    uint8_t first  = controller.readGcrByte();
+    uint8_t second = controller.readGcrByte();
+    CHECK(first == 0xab, "the first byte written was read back as $%02x", first);
+    CHECK(second == 0xcd, "the second byte written was read back as $%02x", second);
+}
+
 static void testDriveCpuCycleAccounting()
 {
     printf("Drive: instructions report the cycles they spent\n");
@@ -627,9 +851,15 @@ int main()
     testHeadStepping();
     testControllerReadsTrack();
     testResetKeepsTheDisk();
+    testWriteProtectSense();
+    testHeadWritesReachTheImage();
+    testHeadWriteStepsFlush();
+    testWriteRefusedOnReadOnlyImage();
+    testGarbledTrackIsNotWrittenBack();
     testSpeedZones();
     testDriveMemoryMap();
     testDriveCpuRuns();
+    testDriveCpuWritesTheHead();
     testDriveCpuCycleAccounting();
     testLargeCycleBudget();
     testDriveWithoutRom();
