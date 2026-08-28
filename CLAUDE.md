@@ -74,6 +74,43 @@ codes per buffer, `$06`-`$11` the track and sector each wants, and the code is
 replaced by the result -- `$01` ok, `$02` header not found, `$03` no sync,
 `$04` data block not found, `$05` data checksum, `$0b` id mismatch.
 
+## Config that looks set but is not
+
+Two ways a value in `sdkconfigs/` silently fails to reach the build, both of
+which have cost real debugging time:
+
+**A stale `sdkconfig` in the working directory wins.** ESP-IDF only applies
+`SDKCONFIG_DEFAULTS` for symbols the existing `sdkconfig` does not already
+mention, so a leftover from another branch pins whatever it happens to hold.
+It is untracked here and survives a branch switch. Delete it and rebuild
+before trusting any config value, and check `build/config/sdkconfig.h` for
+what was actually compiled rather than the template.
+
+**An invisible Kconfig symbol cannot be set at all.** A `config` with no
+prompt always takes its `default`, whatever the defaults file says, and the
+build does not warn. `CONFIG_USB_HOST_EXT_PORT_RESET_ATTEMPTS` is one of
+these in IDF v5.5.1: it is `depends on IDF_EXPERIMENTAL_FEATURES`, marked
+"Invisible config option", `default 1`. Setting it to 5 does nothing.
+Check the symbol in `$IDF_PATH/components/*/Kconfig*` before believing a
+config change had any effect.
+
+## A USB drive needs a FATFS volume slot of its own
+
+`CONFIG_FATFS_VOLUME_COUNT` must leave a slot free or a USB drive is turned
+away before its filesystem is examined at all. The internal flash (`/int`) and
+the SD card take one each, so the count has to be at least 3. The symptom is
+that every disk fails identically, whatever it is or how it is formatted:
+
+```
+usb_msc: MSC device connected (addr=1)
+usb_msc: msc_host_vfs_register failed: ESP_ERR_NOT_FOUND
+```
+
+`ESP_ERR_NOT_FOUND` there has one source: `msc_host_vfs_register()` begins
+with `ff_diskio_get_drive()`, which reports it when every drive slot is taken.
+Reading that error is what identifies the fault; guessing at USB host settings
+does not, and there are several plausible-looking ones that are irrelevant.
+
 ## Flashing
 
 Over badgelink (USB `16d0:0f9a`), not serial. Two identical
@@ -81,7 +118,11 @@ Over badgelink (USB `16d0:0f9a`), not serial. Two identical
 stable**, so tell them apart by what they print: the radio coprocessor says
 `Project name: tanmatsu-radio`, the P4 says `transport: Slave chip Id[12]`.
 Both consoles are readable while the app runs, so reading a log needs no mode
-switch. Decode a crash against the matching ELF; running one chip's addresses
+switch -- but only until the app takes the USB port into host mode for a
+gamepad or a drive, at which point the P4 console goes with it and its
+`ttyACM` device disappears. Anything that has to be observed while a USB
+device is attached needs logging built into the firmware, or has to be shown
+on screen; the serial console will not be there. Decode a crash against the matching ELF; running one chip's addresses
 through the other's `application.elf` resolves to plausible, entirely wrong
 names.
 
