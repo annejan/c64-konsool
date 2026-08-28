@@ -34,7 +34,7 @@ Since the menu structure is still being developed, I'm going to not document mor
 | -------- | ---------------------------------------------------------------- |
 | **.PRG** | Full. Loaded straight into memory.                               |
 | **.T64** | Full. Pick a program from the tape container.                    |
-| **.D64** | Read only, mountable as drive 8 so the C64 loads from it itself. |
+| **.D64** | Mountable as drive 8, with loading and saving.                   |
 | .TAP     | Not supported, needs datasette emulation.                        |
 | .CRT     | Not supported, needs cartridge ROM banking.                      |
 
@@ -67,7 +67,8 @@ different one, the same way a real drive stays plugged in across a reset.
 
 **Picking a program from the list** copies that one program straight into
 memory, the same way a .prg is loaded. It is quicker for something that loads
-in one go, and it is the only option for a .t64.
+in one go, and it is the only option for a .t64. Nothing can be saved back
+this way; mount the disk if you want to save.
 
 Files that were never closed properly on the original disk are listed with a
 trailing `*`, exactly as a real directory listing marks them, and will usually
@@ -87,6 +88,18 @@ Because every one of the Kernal's higher level routines is built on those eight
 primitives, implementing them once covers `LOAD`, `SAVE`, `OPEN`, `CHRIN`,
 directory listings and sequential files alike.
 
+Saving works too, so `SAVE"NAME",8` writes a real file to the image, blocks
+are taken from and given back to the BAM, and the directory entry is only
+marked closed once the last sector is written. An interrupted save therefore
+shows up as a splat file, exactly as it would on real hardware. The command
+channel handles scratch and rename:
+
+```
+OPEN 15,8,15,"S0:NAME":CLOSE 15       delete a file
+OPEN 15,8,15,"R0:NEW=OLD":CLOSE 15    rename a file
+SAVE"@0:NAME",8                       save over an existing file
+```
+
 What this does **not** cover:
 
 - **Fast loaders.** A fast loader bit-bangs the serial lines directly and
@@ -94,9 +107,15 @@ What this does **not** cover:
   that are trapped. That needs a real 1541 with its own CPU, which is a
   separate piece of work; the `IecDevice` interface exists so it can be added
   underneath without disturbing anything above it.
-- **Writing.** `SAVE`, `OPEN` for write and the scratch, rename and format
-  commands all answer `26,WRITE PROTECT ON`. Reading is unaffected.
+- **Formatting and copying** (`N` and `C` on the command channel), which
+  answer `31,SYNTAX ERROR`.
+- **Appending** to an existing file (`,A`), which answers `30,SYNTAX ERROR`.
 - **REL files**, which need side sectors.
+- **Growing the directory** past its 144 entries; a full directory answers
+  `72,DISK FULL`.
+
+If the card or the file will not open for writing, the image is mounted read
+only and everything above answers `26,WRITE PROTECT ON` instead.
 
 ### Loading a .prg from BASIC
 
