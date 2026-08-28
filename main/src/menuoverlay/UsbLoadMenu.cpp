@@ -1,8 +1,10 @@
 #include "UsbLoadMenu.hpp"
 #include <dirent.h>
+#include <cstdio>
 #include <string>
 #include "C64Emu.hpp"
 #include "ExternalCmds.hpp"
+#include "SDCard.hpp"
 #include "esp_log.h"
 #include "freertos/idf_additions.h"
 #include "menuoverlay/MenuController.hpp"
@@ -21,105 +23,146 @@ UsbLoadMenu::UsbLoadMenu(std::string title, MenuBaseClass* previousMenu, MenuCon
 
 UsbLoadMenu::~UsbLoadMenu() {}
 
-std::vector<MenuItem> UsbLoadMenu::getDirPage(uint16_t page) {
-    size_t     skip    = (size_t)page * pageSize;
-    size_t     skipped = 0;
-    size_t     added   = 0;
-    uint16_t   id_count = 0;
-
-    DIR* dir = opendir(USB_PRG_PATH);
-    if (!dir) {
-        MenuItem item;
-        item.id     = id_count++;
-        item.title  = "(No USB disk mounted)";
-        item.type   = MenuItemType::ACTION;
-        item.action = [](MenuItem*) {};
-        this->items.push_back(item);
-        return items;
-    }
-
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != nullptr && added < pageSize) {
-        std::string name = ent->d_name;
-        if (name.length() <= 4 || name.substr(name.length() - 4) != ".prg") {
-            continue;
-        }
-        if (skipped < skip) {
-            skipped++;
-            continue;
-        }
-        MenuItem item;
-        item.id     = id_count++;
-        item.title  = name.substr(0, name.length() - 4);
-        item.type   = MenuItemType::ACTION;
-        item.action = [this](MenuItem* item) { this->loadPrg(item); };
-        this->items.push_back(item);
-        added++;
-    }
-    closedir(dir);
-    return items;
+void UsbLoadMenu::refreshEntries()
+{
+    entries = SDCard::listProgramFiles(USB_PRG_PATH);
 }
 
-void UsbLoadMenu::navigateBegin() {
-    needsRefresh = true;
+size_t UsbLoadMenu::pageCount() const
+{
+    if (entries.empty()) return 1;
+    return (entries.size() + pageSize - 1) / pageSize;
+}
+
+void UsbLoadMenu::toNextPage()
+{
+    // Wrapping means a program at the end of a long listing is one step back
+    // from the first page rather than a walk through every page in between.
+    nextPage = static_cast<uint16_t>((currentPage + 1) % pageCount());
+    // Deliberately not navigateBegin(): that override jumps back to the first
+    // page, which is right when entering the menu and wrong when paging.
     MenuBaseClass::navigateBegin();
+    ESP_LOGI(TAG, "page %u of %zu", static_cast<unsigned>(nextPage + 1), pageCount());
 }
 
-void UsbLoadMenu::toNextPage() {
-    nextPage++;
-    navigateBegin();
-    ESP_LOGI(TAG, "Loading next page %d", nextPage);
+void UsbLoadMenu::toPrevPage()
+{
+    nextPage = static_cast<uint16_t>((currentPage + pageCount() - 1) % pageCount());
+    MenuBaseClass::navigateBegin();
+    ESP_LOGI(TAG, "page %u of %zu", static_cast<unsigned>(nextPage + 1), pageCount());
 }
 
-void UsbLoadMenu::toPrevPage() {
-    if (nextPage > 0) {
-        nextPage--;
-        navigateBegin();
-    }
-    ESP_LOGI(TAG, "Loading previous page %d", nextPage);
-}
-
-void UsbLoadMenu::displayMenu() {
+void UsbLoadMenu::displayMenu()
+{
     items.clear();
 
-    if (currentPage != 0) {
-        MenuItem prevPageItem;
-        prevPageItem.id     = 20;
-        prevPageItem.title  = "=== Prev Page ===";
-        prevPageItem.type   = MenuItemType::ACTION;
-        prevPageItem.action = [this](MenuItem* item) { this->toPrevPage(); };
-        this->items.push_back(prevPageItem);
+    DIR* dir = opendir(USB_PRG_PATH);
+    if (dir == nullptr) {
+        MenuItem item = MenuItem();
+        item.id       = 0;
+        item.title    = "(No USB disk mounted)";
+        item.type     = MenuItemType::SPACER;
+        items.push_back(item);
+        return;
+    }
+    closedir(dir);
+
+    if (entries.empty()) {
+        MenuItem item = MenuItem();
+        item.id       = 0;
+        item.title    = "(No programs found)";
+        item.type     = MenuItemType::SPACER;
+        items.push_back(item);
+        return;
     }
 
-    this->items = getDirPage(currentPage);
+    size_t pages = pageCount();
+    if (currentPage >= pages) currentPage = 0;
 
-    MenuItem nextPageItem;
-    nextPageItem.id     = 21;
-    nextPageItem.title  = "=== Next Page ===";
-    nextPageItem.type   = MenuItemType::ACTION;
-    nextPageItem.action = [this](MenuItem* item) { this->toNextPage(); };
-    this->items.push_back(nextPageItem);
+    char label[40];
+    snprintf(label, sizeof(label), "=== Prev page (%u/%u) ===", static_cast<unsigned>(currentPage + 1),
+             static_cast<unsigned>(pages));
+
+    if (pages > 1) {
+        MenuItem prevPageItem = MenuItem();
+        prevPageItem.id       = 0xfffe;
+        prevPageItem.title    = label;
+        prevPageItem.type     = MenuItemType::ACTION;
+        prevPageItem.action   = [this](MenuItem* item) {
+            (void)item;
+            this->toPrevPage();
+        };
+        items.push_back(prevPageItem);
+    }
+
+    size_t   start    = static_cast<size_t>(currentPage) * pageSize;
+    uint16_t id_count = 0;
+    for (size_t i = start; i < entries.size() && i < start + pageSize; i++) {
+        const std::string name = entries[i];
+
+        MenuItem item = MenuItem();
+        item.id       = id_count++;
+        item.title    = name;
+        item.type     = MenuItemType::ACTION;
+        item.action   = [this, name](MenuItem* menuItem) {
+            (void)menuItem;
+            this->loadPrg(name);
+        };
+        items.push_back(item);
+    }
+
+    if (pages > 1) {
+        snprintf(label, sizeof(label), "=== Next page (%u/%u) ===", static_cast<unsigned>(currentPage + 1),
+                 static_cast<unsigned>(pages));
+        MenuItem nextPageItem = MenuItem();
+        nextPageItem.id       = 0xffff;
+        nextPageItem.title    = label;
+        nextPageItem.type     = MenuItemType::ACTION;
+        nextPageItem.action   = [this](MenuItem* item) {
+            (void)item;
+            this->toNextPage();
+        };
+        items.push_back(nextPageItem);
+    }
 }
 
-void UsbLoadMenu::loadPrg(MenuItem* item) {
+void UsbLoadMenu::loadPrg(const std::string& name)
+{
     ExternalCmds* ext = &c64emu->externalCmds;
+
     ext->reset();
     vTaskDelay(3000 / portTICK_PERIOD_MS);
-    std::string path = std::string(USB_PRG_PATH "/") + item->title + ".prg";
+    std::string path = std::string(USB_PRG_PATH "/") + name + ".prg";
     ext->loadPrgFromPath(path.c_str());
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     menuController->hide();
 }
 
-void UsbLoadMenu::update() {
-    if (needsRefresh || currentPage != nextPage) {
+// Entering the menu starts again at the first page and rereads the directory,
+// so a disk plugged in while the menu was closed shows up.
+void UsbLoadMenu::navigateBegin()
+{
+    needsRefresh = true;
+    nextPage     = 0;
+    MenuBaseClass::navigateBegin();
+}
+
+void UsbLoadMenu::update()
+{
+    if (needsRefresh) {
         needsRefresh = false;
-        currentPage  = nextPage;
+        refreshEntries();
+        currentPage = nextPage;
+        displayMenu();
+    } else if (currentPage != nextPage) {
+        currentPage = nextPage;
         displayMenu();
     }
 }
 
-bool UsbLoadMenu::init() {
+bool UsbLoadMenu::init()
+{
+    ESP_LOGI(TAG, "initializing usb load menu");
     needsRefresh = true;
     currentPage  = 0;
     nextPage     = 0;

@@ -36,6 +36,10 @@ class SDCard {
     uint16_t                 load(const char* path, uint8_t* ram, size_t len = 0);
     uint16_t                 load_auto(const char* path, uint8_t* ram, size_t len = 0);
     bool                     save(const char* path, const uint8_t* ram, size_t len = 0);
-    std::vector<std::string> listPagedEntries(const char* path, size_t page, size_t pageSize);
+    // Lists the programs in `path`, sorted, with the .prg extension taken off.
+    // Static so it serves the USB disk as well as the card. A directory with
+    // more than MAX_LISTED_FILES programs is truncated, with a warning.
+    static const size_t      MAX_LISTED_FILES = 512;
+    static std::vector<std::string> listProgramFiles(const char* path);
     bool                     listNextEntry(uint8_t* nextEntry, size_t entrySize, bool start);
 };

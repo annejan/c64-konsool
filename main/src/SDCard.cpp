@@ -5,6 +5,9 @@
 #include <sys/unistd.h>
 #include <cstdint>
 #include <cstring>
+#include <strings.h>
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 #include "Config.hpp"
@@ -127,50 +130,49 @@ bool SDCard::save(const char* path, const uint8_t* ram, size_t len)
     return true;
 }
 
-std::vector<std::string> SDCard::listPagedEntries(const char* path, size_t page, size_t pageSize)
+std::vector<std::string> SDCard::listProgramFiles(const char* path)
 {
     std::vector<std::string> result;
-    DIR*                     dir = nullptr;
-    struct dirent*           ent;
+    bool                     truncated = false;
 
-    if (!initialized) return result;
-
-    // calculate the start offset
-    size_t startOffset = page * pageSize;
-
-    ESP_LOGI(TAG, "list paged entries %s, page %zu, pageSize %zu", path, page, pageSize);
-
-    dir = opendir(path);
-    if (!dir) {
-        ESP_LOGI(TAG, "cannot open root dir");
+    DIR* dir = opendir(path);
+    if (dir == nullptr) {
+        ESP_LOGI(TAG, "cannot open %s", path);
         return result;
     }
 
-    // Move the directory to the start offset
-    for (uint16_t count = 0; count < startOffset; count++) {
-        if (readdir(dir) == nullptr) {
-            closedir(dir);
-            return result;
-        }
-    }
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        std::string name = ent->d_name;
+        if (name.length() <= 4) continue;
 
-    // Read the next page of entries until either the end of the
-    // directory or the desired page size is reached
-    uint32_t count = 0;
-    while (count < pageSize) {
-        ent = readdir(dir);
-        if (ent == nullptr) {
+        std::string ext = name.substr(name.length() - 4);
+        for (size_t i = 0; i < ext.size(); i++) {
+            ext[i] = static_cast<char>(tolower(static_cast<unsigned char>(ext[i])));
+        }
+        if (ext != ".prg") continue;
+
+        if (result.size() >= MAX_LISTED_FILES) {
+            truncated = true;
             break;
         }
-        // if the name > 4 characters and ends with.prg, cut off '.prg' and add it to the result
-        std::string name = ent->d_name;
-        if (name.length() > 4 && name.substr(name.length() - 4) == ".prg") {
-            name = name.substr(0, name.length() - 4);
-            result.push_back(name);
-        }
-        count++;
+        result.push_back(name.substr(0, name.length() - 4));
     }
     closedir(dir);
+
+    if (truncated) {
+        ESP_LOGW(TAG, "%s holds more than %u programs, the rest are not listed", path,
+                 static_cast<unsigned>(MAX_LISTED_FILES));
+    }
+
+    // readdir hands entries back in whatever order the filesystem stored them,
+    // so a file sits wherever it was written rather than where it is looked
+    // for. Sorting also keeps the pages stable from one refresh to the next.
+    std::sort(result.begin(), result.end(), [](const std::string& a, const std::string& b) {
+        return strcasecmp(a.c_str(), b.c_str()) < 0;
+    });
+
+    ESP_LOGI(TAG, "%zu programs in %s", result.size(), path);
     return result;
 }
 
