@@ -76,7 +76,16 @@ class Via6522 {
     // it came round.
     bool t1Fired = false;
 
+    // Last level seen on CA1, so only an edge raises the flag.
+    bool ca1 = false;
+
     void reset();
+
+    // CA1 is an input pin. The chip latches an interrupt on the edge PCR bit
+    // 0 selects: clear for a falling edge, set for a rising one. On the 1541's
+    // VIA 1 this pin is ATN coming in off the serial bus, which is how the
+    // DOS learns it has been called.
+    void setCa1(bool level);
 
     // Runs both timers for `cycles`, raising their interrupt flags. Timer 1
     // reloads by itself in free running mode.

@@ -74,6 +74,11 @@ void Drive1541::updateIecOutputs()
     // DATA down until the drive has noticed an ATN it was sent.
     lines->driveClk  = clkOut;
     lines->driveData = dataOut || (atna != lines->atnLow());
+
+    // ATN also runs to VIA 1's CA1 pin. The gate above answers the bus on its
+    // own, but it is this interrupt that gets the DOS out of its idle loop to
+    // find out what it was called for.
+    via1.setCa1(lines->atnLow());
 }
 
 // The stepper turns through four phases; which way it went tells the head

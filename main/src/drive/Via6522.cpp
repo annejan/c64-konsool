@@ -16,6 +16,20 @@ void Via6522::reset()
     ifr     = 0;
     ier     = 0;
     t1Fired = false;
+    ca1     = false;
+}
+
+void Via6522::setCa1(bool level)
+{
+    if (level == ca1) return;
+    ca1 = level;
+
+    // Only the edge the PCR asks for latches an interrupt.
+    bool wantRising = (pcr & 0x01) != 0;
+    if (level == wantRising) {
+        ifr |= IRQ_CA1;
+        updateIrqFlag();
+    }
 }
 
 void Via6522::updateIrqFlag()
