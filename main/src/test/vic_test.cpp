@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "HeadlessDisplay.hpp"
 #include "VIC.hpp"
@@ -260,6 +261,101 @@ static void testBadLineSuppressionStopsTheRow()
     CHECK(r1 == want, "row 1 of 'A' drew %02x before any suppression, expected %02x", r1, want);
 }
 
+
+// Sprites are positioned against the raster line and nothing else. YSCROLL
+// scrolls the character display; there is no path from $d011 to the sprite
+// sequencer. This one is here because there was such a path: the sprite Y
+// comparison, the row of sprite data fetched and the row it was drawn on all
+// took "rasterline + (vicreg[0x11] & 7) - 3", so every sprite moved when a
+// demo scrolled the text. The default $d011 of $1b makes that term zero, which
+// is why only demos ever noticed.
+static void testSpritesIgnoreYScroll()
+{
+    printf("VIC: a sprite sits on the same lines whatever YSCROLL says\n");
+
+    // Which screen rows a solid sprite covers, with YSCROLL set to yscroll.
+    auto rowsCovered = [](int yscroll) {
+        Machine m;
+        // Solid 24x21 sprite: three bytes per row, all ones.
+        for (int i = 0; i < 63; i++) ram[0x0800 + i] = 0xff;
+        ram[0x0400 + 1016] = 0x20;  // sprite 0 data at $20 * 64 = $0800
+        m.vic.vicreg[0x15] = 0x01;  // sprite 0 on
+        m.vic.vicreg[0x00] = 0x40;  // x, minus the 24 pixel border offset
+        m.vic.vicreg[0x01] = 0x60;  // y
+        m.vic.vicreg[0x27] = 0x01;  // white
+        m.vic.vicreg[0x11] = static_cast<uint8_t>(0x18 | (yscroll & 7));
+        m.vic.vicreg[0x21] = 0x06;  // blue paper, and every cell is black ink,
+        for (int i = 0; i < 1000; i++) m.vic.colormap[i] = 0x00;  // so only the
+        m.drawFrame();                                            // sprite is white
+
+        // Find the sprite by its own colour, not by "differs from the
+        // background": changing YSCROLL changes how the characters are drawn
+        // too, so anything looser measures the text rather than the sprite.
+        const uint16_t white = HeadlessDisplay::colors[1];
+        std::string    rows;
+        for (int r = 0; r < 200; r++) {
+            bool any = false;
+            for (int c = 0; c < 320 && !any; c++) {
+                if (m.px(r, c) == white) any = true;
+            }
+            rows += any ? '1' : '0';
+        }
+        return rows;
+    };
+
+    std::string at3 = rowsCovered(3);   // the default
+    std::string at7 = rowsCovered(7);
+    std::string at0 = rowsCovered(0);
+
+    CHECK(at3.find('1') != std::string::npos, "the sprite did not appear at all, the test proves nothing");
+    CHECK(at3 == at7, "moving YSCROLL from 3 to 7 moved the sprite");
+    CHECK(at3 == at0, "moving YSCROLL from 3 to 0 moved the sprite");
+}
+
+// In the multicolour modes the bit pairs 00 and 01 are both background, and
+// only 10 and 11 are foreground. That decides sprite priority and
+// sprite-to-background collision. Calling 01 foreground hid sprites behind
+// what should have been backdrop, and only in multicolour, which is why hires
+// looked fine while multicolour did not.
+static void testMulticolourZeroOneIsBackground()
+{
+    printf("VIC: bit pair 01 is background in multicolour, so a sprite shows through it\n");
+
+    // Fill the screen with a character whose every bit pair is 01, put a solid
+    // sprite over it with background priority, and see whether the sprite is
+    // drawn. 01 is background, so it must be.
+    Machine m;
+    for (int i = 0; i < 8; i++) ram[0x0800 + i] = 0x55;  // 01 01 01 01
+    for (int i = 0; i < 1000; i++) {
+        ram[0x0400 + i]   = 0x00;   // character 0, whose glyph is the $55 above
+        m.vic.colormap[i] = 0x0f;   // bit 3 set: this cell is multicolour
+    }
+    for (int i = 0; i < 63; i++) ram[0x0a00 + i] = 0xff;
+    ram[0x0400 + 1016] = 0x28;      // sprite data at $28 * 64 = $0a00
+
+    m.vic.vicreg[0x11] = 0x1b;
+    m.vic.vicreg[0x16] = 0x18;      // multicolour text
+    m.vic.vicreg[0x18] = 0x12;      // screen $0400, charset $0800
+    m.vic.charset      = ram + 0x0800;
+    m.vic.vicreg[0x22] = 0x02;
+    m.vic.vicreg[0x23] = 0x03;
+    m.vic.vicreg[0x15] = 0x01;      // sprite 0 on
+    m.vic.vicreg[0x1b] = 0x01;      // sprite 0 BEHIND the foreground
+    m.vic.vicreg[0x00] = 0x50;
+    m.vic.vicreg[0x01] = 0x60;
+    m.vic.vicreg[0x27] = 0x01;      // white
+    m.drawFrame();
+
+    // The sprite's colour must appear somewhere in the band it covers. If 01
+    // counted as foreground the sprite would be hidden behind it everywhere.
+    const uint16_t white = HeadlessDisplay::colors[1];
+    int hits = 0;
+    for (int r = 0; r < 200; r++)
+        for (int c = 0; c < 320; c++)
+            if (m.px(r, c) == white) hits++;
+    CHECK(hits > 0, "a sprite with background priority was hidden by bit pair 01, which is not foreground");
+}
+
 int main()
 {
     printf("VIC rendering\n\n");
@@ -267,6 +363,8 @@ int main()
     testEveryColumnIsFetched();
     testRowAdvancesEveryEightLines();
     testBadLineSuppressionStopsTheRow();
+    testSpritesIgnoreYScroll();
+    testMulticolourZeroOneIsBackground();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
