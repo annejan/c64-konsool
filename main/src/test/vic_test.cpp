@@ -488,6 +488,82 @@ static void testMulticolourBitmapColours()
     }
 }
 
+
+// A multicolour sprite draws in pairs, two pixels wide: 00 is transparent, 01
+// is $d025, 10 is the sprite's own colour, and 11 is $d026. Edge of Disgrace
+// leans on these, and none of it was covered.
+static void testMulticolourSpriteColours()
+{
+    printf("VIC: a multicolour sprite takes 01 from $d025, 10 from its own colour, 11 from $d026\n");
+    Machine m;
+
+    // A blank screen in a known background, so "transparent" is checkable.
+    for (int i = 0; i < 1000; i++) {
+        ram[0x0400 + i]   = 0x20;  // space
+        m.vic.colormap[i] = 0x00;
+    }
+    for (int r = 0; r < 21; r++) ram[0x0800 + r * 3] = 0x1b;  // 00 01 10 11
+    ram[0x0400 + 1016] = 0x20;                                // sprite 0 data at $0800
+
+    m.vic.vicreg[0x21] = 0x06;  // background blue
+    m.vic.vicreg[0x15] = 0x01;  // sprite 0 on
+    m.vic.vicreg[0x1c] = 0x01;  // sprite 0 multicolour
+    m.vic.vicreg[0x00] = 0x40;  // x = 64 - 24 = 40
+    m.vic.vicreg[0x01] = 0x60;  // y = 96, so screen rows 46..66
+    m.vic.vicreg[0x25] = 0x02;  // 01
+    m.vic.vicreg[0x26] = 0x03;  // 11
+    m.vic.vicreg[0x27] = 0x01;  // 10, the sprite's own colour
+    m.drawFrame();
+
+    const uint16_t* pal     = HeadlessDisplay::colors;
+    const uint16_t  want[4] = {pal[6], pal[2], pal[1], pal[3]};
+    const char*     from[4] = {"the background, being transparent", "$d025", "the sprite's own colour", "$d026"};
+
+    const int row = 50;  // inside 46..66
+    for (int pair = 0; pair < 4; pair++) {
+        for (int half = 0; half < 2; half++) {
+            uint16_t got = m.px(row, 40 + pair * 2 + half);
+            CHECK(got == want[pair], "mc sprite pair %d pixel %d came out %04x, expected %04x from %s", pair, half,
+                  got, want[pair], from[pair]);
+        }
+    }
+}
+
+// Y expansion doubles a sprite's height, 21 lines becoming 42, with each row of
+// data drawn twice.
+static void testSpriteYExpansion()
+{
+    printf("VIC: Y expansion makes a sprite twice as tall\n");
+
+    auto height = [](bool expanded) {
+        Machine m;
+        for (int i = 0; i < 63; i++) ram[0x0800 + i] = 0xff;
+        ram[0x0400 + 1016] = 0x20;
+        for (int i = 0; i < 1000; i++) m.vic.colormap[i] = 0x00;
+        m.vic.vicreg[0x21] = 0x06;
+        m.vic.vicreg[0x15] = 0x01;
+        m.vic.vicreg[0x17] = expanded ? 0x01 : 0x00;  // Y expand sprite 0
+        m.vic.vicreg[0x00] = 0x40;
+        m.vic.vicreg[0x01] = 0x60;
+        m.vic.vicreg[0x27] = 0x01;  // white
+        m.drawFrame();
+
+        const uint16_t white = HeadlessDisplay::colors[1];
+        int rows = 0;
+        for (int r = 0; r < 200; r++) {
+            for (int c = 0; c < 320; c++) {
+                if (m.px(r, c) == white) { rows++; break; }
+            }
+        }
+        return rows;
+    };
+
+    int plain    = height(false);
+    int expanded = height(true);
+    CHECK(plain == 21, "an unexpanded sprite covered %d lines, expected 21", plain);
+    CHECK(expanded == 42, "a Y expanded sprite covered %d lines, expected 42", expanded);
+}
+
 int main()
 {
     printf("VIC rendering\n\n");
@@ -501,6 +577,8 @@ int main()
     testInvalidModeIsBlack();
     testHiresBitmapColours();
     testMulticolourBitmapColours();
+    testMulticolourSpriteColours();
+    testSpriteYExpansion();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
