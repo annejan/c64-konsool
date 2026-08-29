@@ -442,13 +442,20 @@ void ExternalCmds::unmountDisk() {
     if (!mounted) return;
 
     if (trueDrive) {
-        c64emu->cpu.disableTrueDrive();
+        // Taking the disk out does not switch the drive off, on a real 1541 or
+        // here. Switching it off left this object still believing it was on,
+        // and the menu toggle still reading "On" over a drive that was not
+        // running, so the setting lied about the machine. Re-enable it with no
+        // disk instead, which is what an empty drive is.
+        c64emu->cpu.cpuhalted = true;
+        c64emu->cpu.enableTrueDrive(driveRom, nullptr);
+        c64emu->cpu.cpuhalted = false;
         dos.setDisk(nullptr);
         c64emu->cpu.iecbus.detach(8);
         disk.close();
         mounted = false;
         mountedName.clear();
-        ESP_LOGI(TAG, "unmounted the emulated 1541");
+        ESP_LOGI(TAG, "took the disk out of the emulated 1541");
         return;
     }
 
