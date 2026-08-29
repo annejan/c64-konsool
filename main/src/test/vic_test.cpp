@@ -424,6 +424,70 @@ static void testInvalidModeIsBlack()
     CHECK(wrong == 0, "%d of 320 pixels on an invalid-mode line were not black", wrong);
 }
 
+
+// Hires bitmap takes both its colours from the video matrix byte and none from
+// colour RAM: a set bit is the high nibble, a clear bit the low one. That is
+// the one mode where colour RAM is not read at all.
+static void testHiresBitmapColours()
+{
+    printf("VIC: hires bitmap takes both colours from the video matrix byte\n");
+    Machine m;
+
+    m.vic.vicreg[0x11] = 0x3b;      // bitmap mode, display on, 25 rows
+    m.vic.vicreg[0x16] = 0x08;      // hires, 40 columns
+    m.vic.bitmapstart  = 0x2000;
+    m.vic.screenmemstart = 0x0400;
+
+    ram[0x2000] = 0xaa;             // 1010 1010, alternating
+    for (int i = 0; i < 1000; i++) {
+        ram[0x0400 + i]   = 0x71;   // 7 where set, 1 where clear
+        m.vic.colormap[i] = 0x0c;   // must be ignored entirely
+    }
+    m.drawFrame();
+
+    const uint16_t* pal = HeadlessDisplay::colors;
+    for (int x = 0; x < 8; x++) {
+        bool     set  = (0xaa >> (7 - x)) & 1;
+        uint16_t want = set ? pal[7] : pal[1];
+        uint16_t got  = m.px(0, x);
+        CHECK(got == want, "hires bitmap pixel %d came out %04x, expected %04x from the %s nibble", x, got, want,
+              set ? "high" : "low");
+    }
+}
+
+// Multicolour bitmap uses all three sources: 00 is $d021, 01 the high nibble of
+// the video matrix byte, 10 the low nibble, and 11 colour RAM.
+static void testMulticolourBitmapColours()
+{
+    printf("VIC: multicolour bitmap takes 01 and 10 from the matrix nibbles, 11 from colour RAM\n");
+    Machine m;
+
+    m.vic.vicreg[0x11] = 0x3b;      // bitmap mode
+    m.vic.vicreg[0x16] = 0x18;      // multicolour, 40 columns
+    m.vic.vicreg[0x21] = 0x00;      // 00 -> black
+    m.vic.bitmapstart  = 0x2000;
+    m.vic.screenmemstart = 0x0400;
+
+    ram[0x2000] = 0x1b;             // 00 01 10 11
+    for (int i = 0; i < 1000; i++) {
+        ram[0x0400 + i]   = 0x21;   // 01 -> 2, 10 -> 1
+        m.vic.colormap[i] = 0x05;   // 11 -> 5
+    }
+    m.drawFrame();
+
+    const uint16_t* pal     = HeadlessDisplay::colors;
+    const uint16_t  want[4] = {pal[0], pal[2], pal[1], pal[5]};
+    const char*     from[4] = {"$d021", "the high nibble", "the low nibble", "colour RAM"};
+
+    for (int pair = 0; pair < 4; pair++) {
+        for (int half = 0; half < 2; half++) {
+            uint16_t got = m.px(0, pair * 2 + half);
+            CHECK(got == want[pair], "mc bitmap pair %d pixel %d came out %04x, expected %04x from %s", pair, half,
+                  got, want[pair], from[pair]);
+        }
+    }
+}
+
 int main()
 {
     printf("VIC rendering\n\n");
@@ -435,6 +499,8 @@ int main()
     testMulticolourZeroOneIsBackground();
     testMulticolourTextColours();
     testInvalidModeIsBlack();
+    testHiresBitmapColours();
+    testMulticolourBitmapColours();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
