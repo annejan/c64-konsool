@@ -367,14 +367,49 @@ identical to VICE's:
 So the bytes on the emulated surface are right, and the header the loader reads
 is the header VICE would give it.
 
-What that leaves is the drivecode's own state. The check at `$05f2` folds the
-header against `$b1,Y`, `$93` and a pointer at `$57`, all of which the loader
-set up earlier -- and everything at `$0500`-`$07ff` arrived over the serial bus
-through the `$dd02` transfer loop at `$3848`. If a byte of that upload is wrong,
-the tables are wrong and no header will ever satisfy the check, which is exactly
-the symptom. Comparing the uploaded drivecode against a known good copy is the
-next thing to try, and note that the MCP build exposes no drive bank, so that
-comparison needs another route.
+The upload is not the problem either. Logging the byte the C64 loads at `$3851`
+against the byte the drive stores at `$066a` shows the two sequences agreeing
+exactly -- `ff ff ff 30 f0 60 b0 20 ff 40 80 00 ...` on both sides -- so the
+`$dd02` transfer delivers the drivecode and its tables intact.
+
+### The head is on the wrong track
+
+What is actually wrong is where the head is. During the hunt:
+
+    [track] head on track 1 (halfTrack 2) pos=5971
+
+Track 1. The drivecode steps the head out from track 18 all the way to the stop
+-- a bump, which is normal -- and then **never steps back in**. Counting the
+steps after the upload: `in=0`, every one of them outward. So every header it
+reads is a track 1 header, the check at `$05f2` compares it against what it
+expects for the track it means to be on, and fails for ever. That is why the
+`$52` is right and the fold still fails.
+
+### The stepper model differs from VICE, but porting it breaks kloten
+
+VICE (`src/drive/iecieee/via2d.c`, `store_prb`) works out the step from the
+head's own position rather than a remembered phase, and ignores an ambiguous
+two coil jump:
+
+```c
+new_stepper_position = byte & 3;
+old_stepper_position = (current_half_track - 2) & 3;
+step_count = (new - old) & 3;          /* 3 means -1 */
+if (byte & 0x4) {                      /* only while the motor runs */
+    if (step_count == 1 || step_count == -1) drive_move_head(step_count, drv);
+}
+```
+
+`updateStepper` here keeps its own `lastStepperPhase`, has no motor check, and
+treats anything that is not a single step forward as a step outward, so a two
+coil jump moves the head where the hardware would leave it still.
+
+Porting VICE's version verbatim was tried and **regressed kloten**: the five
+.prg demos stayed byte identical but kloten stopped running, sitting at READY
+instead of taking over the screen. So something else in this drive model is
+built around the current behaviour -- the motor gate and the half track base
+are the two candidates -- and the stepper cannot simply be replaced without
+finding it. The change was reverted.
 
 ## VICE as an oracle, through the MCP build
 
