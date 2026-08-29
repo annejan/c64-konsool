@@ -356,6 +356,38 @@ hardware ATN is long gone by the time the drive pulls DATA either.
 
 Which means the model of that `BIT $1800 / BPL $064C` wait is wrong somewhere,
 not the timing around it. On the reading used here -- VIA1 PB7 set when ATN is
-asserted, as Frodo does it -- the loop cannot exit at all, and the demo would
-hang on real hardware too. It does not. That contradiction is the thing to
-resolve, and it is worth more than another timing experiment.
+asserted -- the loop cannot exit at all, and the demo would hang on hardware
+too. It runs on hardware **and in VICE**, so the fault is ours.
+
+### Checked against VICE as well as Frodo, and matching
+
+VICE's own source is worth fetching for this; it is not in the tree. The files
+that matter are `src/drive/iec/via1d1541.c`, `src/iecbus.h` and
+`src/c64/c64cia2.c` from `github.com/VICE-Team/svn-mirror` under `vice/`.
+
+- The drive reads port B as `(drv_port ^ 0x85) | 0x1a | driveid`, then
+  `(PRB & DDRB) | (tmp & ~DDRB)`. The `^ 0x85` inverts DATA, CLK and ATN, so
+  **PB7 is set when ATN is asserted**, agreeing with Frodo. `IECBUS_DEVICE_READ_ATN`
+  being `0x80` and set in `iecbus_init` is the idle bus *before* that inversion,
+  which is easy to misread as the opposite.
+- Output bits read back the latch and only input bits read the bus. `Via6522::read`
+  does exactly this already.
+- The C64 side hands the bus `~byte` where byte is the port A *pin* value, which
+  is the same `~pra & ddra` Frodo uses and the same this code now uses.
+
+So the drive's PB7 polarity, the port B read-back rule and the C64's output
+formula are all confirmed against two reference emulators and all match. The
+disagreement is somewhere else, and it is not any of:
+
+- the four bus polarities, the `$dd00` read, or the port B read-back
+- `A=$01` at the drivecode's entry, which is `LDA #$01` at `$0628`
+- the undocumented opcodes, which are result-tested
+- an interrupt that never fires: the drive has `I=1` there and polls on purpose
+- job or rotation timing, per the measurements above
+
+What is left, and what the next attempt should establish first, is where ATN
+comes from at all after `$383B` releases it. Over a whole run ATN changes 30
+times, all of them during the KERNAL LOAD, and never again. Either the C64 is
+meant to assert it later and does not get there, or the drive is meant to reach
+`$064c` while it is still low. Instrumenting VICE's own drive PC at that moment
+would answer it in one run and is cheaper than any more reasoning from here.
