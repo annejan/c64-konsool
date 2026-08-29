@@ -29,6 +29,7 @@
 // #include "hal/gpio_types.h"
 // #include "hal/usb_serial_jtag_ll.h"
 #include "freertos/projdefs.h"
+#include "esp_app_desc.h"
 #include "menuoverlay/Theme.hpp"
 #include "pax_gfx.h"
 #include "pax_text.h"
@@ -198,6 +199,18 @@ extern "C" void app_main(void)
                       centre(nsz.x, NAME_SIZE * 0.55f * 10), sy(122) + 24.0f, name);
         pax_draw_text(&framebuffer, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE,
                       centre(ssz.x, Theme::BODY_SIZE * 0.55f * 21), sy(122) + 74.0f, sub);
+
+        // Which build this actually is. The version esp-idf puts in the image
+        // is "git describe" of the tree it came from, so it names the commit
+        // and says "-dirty" when it was built over uncommitted changes, which
+        // is what you want to know when a badge has been reflashed all
+        // evening and the launcher only shows an AppFS version number.
+        const esp_app_desc_t* app = esp_app_get_description();
+        if (app != nullptr) {
+            pax_vec2f vsz = pax_text_size(pax_font_saira_regular, 16, app->version);
+            pax_draw_text(&framebuffer, Theme::TEXT_MUTED, pax_font_saira_regular, 16,
+                          centre(vsz.x, 16 * 0.55f * 16), sy(122) + 104.0f, app->version);
+        }
     }
 
     esp_lcd_panel_handle_t display_lcd_panel;
