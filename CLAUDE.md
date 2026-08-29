@@ -318,6 +318,44 @@ What has been ruled out, so do not spend time on it again:
 - It is not an interrupt that never fires: the drive has `I=1` there and is
   polling on purpose.
 
-The lead worth following is what makes the drive's preamble finish early. It
-spends its time in job-queue reads, so it is disk rotation and job timing that
-decide when `$0640` is reached, not the CPU.
+### Measured, and what it rules out
+
+The C64 side, disassembled, is a two-stage handshake:
+
+```
+3839  A9 C3     LDA #$C3
+383B  8D 00 DD  STA $DD00      ; releases ATN: bit 3 clear
+383E  A9 3F     LDA #$3F
+3840  8D 02 DD  STA $DD02
+3843  2C 00 DD  BIT $DD00
+3846  30 FB     BMI $3843      ; wait for DATA to go LOW: the drive saying it is there
+3848 ...                       ; then a transfer loop that bit bangs $DD02 alone,
+                               ; writing $1f or $0f, which moves CLK between
+                               ; driven-zero and input while $DD00 stays $C3
+3992  AD 00 DD  LDA $DD00
+3995  10 FB     BPL $3992      ; then wait for DATA to be released again
+```
+
+That transfer loop is why a line left as an input has to pull low: the loader
+never writes `$DD00` again, and toggling `$DD02` is the whole signal.
+
+The drive's jobs, timed on the shared counter (C64 instructions):
+
+    t=3011133  posted b0 seek  track 18   -> ok after   4600
+    t=3015837  posted 80 read  track 18   -> ok after  36393
+    t=3134112  posted b0 seek  track 17   -> ok after  36813
+    t=3170996  posted 80 read  track 18   -> ok after 106852
+    t=3277932  drivecode reaches $0640, pulls DATA low
+    t=3386053  C64 reaches $3992
+
+ATN is released at t=3067705, which is **before the third job is even posted**.
+So no plausible change to job or rotation timing gets the drivecode to its ATN
+wait while ATN is still low, and the "the drive is too slow" reading is wrong.
+The C64 releases ATN at `$383B`, before it waits for DATA at `$3843`, so on
+hardware ATN is long gone by the time the drive pulls DATA either.
+
+Which means the model of that `BIT $1800 / BPL $064C` wait is wrong somewhere,
+not the timing around it. On the reading used here -- VIA1 PB7 set when ATN is
+asserted, as Frodo does it -- the loop cannot exit at all, and the demo would
+hang on real hardware too. It does not. That contradiction is the thing to
+resolve, and it is worth more than another timing experiment.
