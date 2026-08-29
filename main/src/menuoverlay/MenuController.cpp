@@ -12,6 +12,7 @@
 #include "menuoverlay/MenuTypes.hpp"
 #include "menuoverlay/PetsciiText.hpp"
 #include "pax_fonts.h"
+#include "Theme.hpp"
 #include "pax_gfx.h"
 #include "pax_text.h"
 
@@ -66,24 +67,24 @@ void MenuController::render()
 
     int currentJoystick = menuDataStore->getInt("kb_joystick_port", 1);
 
-    if (full_update) {
-        pax_background(fb, 0xFFFFFFFF);
-        pax_draw_rect(fb, 0xFF002255, 0, 0, 800, 40);
-        pax_draw_text(fb, 0xFFFFFFFF, pax_font_saira_regular, 18, 10, 10, currentMenu->getTitle().c_str());
-    }
-
     const auto& items = currentMenu->getItems();
 
-    // The screen fits this many rows below the title bar. Longer lists scroll
-    // with the selection instead of being broken into pages.
-    static const size_t MENU_ROWS = 20;
+    // Each screen chooses its own row height, so a short settings list can
+    // breathe while a directory of a hundred and forty entries stays
+    // browsable. Everything below is derived from it rather than assumed.
+    const int    rowH      = currentMenu->rowHeight();
+    const size_t MENU_ROWS = static_cast<size_t>(Theme::CONTENT_H / rowH);
+    const int    bodySize  = rowH >= Theme::BODY_SIZE + 6 ? Theme::BODY_SIZE : Theme::BODY_SIZE_DENSE;
 
-    // A PETSCII name is drawn at two screen pixels per ROM pixel, so a
-    // character is 16 wide and fits the 20 pixel row. A CBM name is 16
-    // characters, plus one for the splat marker an unclosed file gets.
-    static const int   PETSCII_SCALE   = 2;
-    static const float PETSCII_COL_X   = 30;
-    static const float PETSCII_COL_END = PETSCII_COL_X + 17 * PETSCII_CELL * PETSCII_SCALE + 10;
+    // The glyphs are scaled to fill the row exactly. A disk draws its title
+    // box out of characters that are meant to touch, so any leading above or
+    // below breaks the vertical bars into dashes. At a 24 pixel row that is
+    // three screen pixels per ROM pixel; the division is what keeps the two
+    // in step if either changes. A CBM name is 16 characters, plus one for
+    // the splat marker an unclosed file gets.
+    const int   PETSCII_SCALE = rowH / PETSCII_CELL > 0 ? rowH / PETSCII_CELL : 1;
+    const float PETSCII_COL_X = Theme::SIDE_PAD;
+    const float BLOCKS_X      = PETSCII_COL_X + 17 * PETSCII_CELL * PETSCII_SCALE + 12;
 
     size_t total = items.size();
     size_t rows  = total < MENU_ROWS ? total : MENU_ROWS;
@@ -102,9 +103,11 @@ void MenuController::render()
         // Everything moved, so the rows that were on screen are all stale.
         currentMenu->setFirstVisibleItem(first);
         full_update = true;
-        pax_background(fb, 0xFFFFFFFF);
-        pax_draw_rect(fb, 0xFF002255, 0, 0, 800, 40);
-        pax_draw_text(fb, 0xFFFFFFFF, pax_font_saira_regular, 18, 10, 10, currentMenu->getTitle().c_str());
+    }
+
+    if (full_update) {
+        drawChrome(currentJoystick);
+        drawScrollbar(first, rows, total, MENU_ROWS);
     }
 
     for (size_t row = 0; row < rows; row++) {
@@ -112,99 +115,121 @@ void MenuController::render()
         if (idx >= total) break;
         const MenuItem& item = items[idx];
 
-        if (full_update || idx == currentMenu->getPreviousSelectedIndex() ||
-            idx == currentMenu->getCurrentSelectedIndex()) {
-            uint32_t color    = currentMenu->getSelectedItemIndex() == idx ? 0xFFFF0000 : 0xFF002255;
-            bool     selected = currentMenu->getSelectedItemIndex() == idx;
-            float    rowY     = static_cast<float>(60 + row * 20);
+        if (!(full_update || idx == currentMenu->getPreviousSelectedIndex() ||
+              idx == currentMenu->getCurrentSelectedIndex())) {
+            continue;
+        }
 
-            // A CBM name is PETSCII, and the menu font has no graphics
-            // characters in it, so a directory row is drawn from the C64
-            // character ROM instead. What sits either side of the name, the
-            // selection marker and the block count, is ASCII and stays in the
-            // menu font. Two pixels of leading centre the 16 pixel glyphs in
-            // the 20 pixel row.
-            if (!item.petscii.empty()) {
-                pax_draw_rect(fb, 0xFFFFFFFF, 0, rowY, 800, 20);
-                pax_draw_text(fb, color, pax_font_saira_regular, 18, 14, rowY, selected ? ">" : " ");
-                pax_draw_petscii(fb, color, PETSCII_COL_X, rowY + 2, item.petscii, PETSCII_SCALE);
-                pax_draw_text(fb, color, pax_font_saira_regular, 18, PETSCII_COL_END, rowY, item.title.c_str());
-                continue;
-            }
+        bool  selected = currentMenu->getSelectedItemIndex() == idx;
+        bool  inert    = item.type == MenuItemType::SPACER;
+        float rowY     = static_cast<float>(Theme::CONTENT_Y + static_cast<int>(row) * rowH);
 
-            std::string title;
-            switch (item.type) {
-                case MenuItemType::TOGGLE: {
-                    bool checked = menuDataStore->getBool(item.value_name, false);
-                    title        = (((currentMenu->getSelectedItemIndex() == idx) ? "> " : "  ") + item.title +
-                                    (checked ? "On" : "Off"));
-                    break;
-                }
-                case MenuItemType::SPACER: {
-                    title = item.title;
-                    break;
-                }
-                default: {
-                    title = (((currentMenu->getSelectedItemIndex() == idx) ? "> " : "  ") + item.title);
-                    break;
-                }
+        // Rows sit on the ground; only the selected one is raised, with a bar
+        // down its left edge. That reads at a glance without painting every
+        // row a slab of its own.
+        pax_draw_rect(fb, (selected && !inert) ? Theme::SURFACE_RAISE : Theme::BACKGROUND, 0, rowY,
+                      Theme::SCREEN_W, static_cast<float>(rowH));
+        if (selected && !inert) {
+            pax_draw_rect(fb, Theme::ACCENT, 0, rowY, Theme::SEL_BAR_W, static_cast<float>(rowH));
+        }
+
+        float textY = rowY + static_cast<float>(rowH - bodySize) / 2.0f;
+
+        // A CBM name is PETSCII, and the menu font has no graphics characters
+        // in it, so a directory row is drawn from the C64 character ROM. The
+        // block count beside it is ASCII and stays in the menu font. Rows that
+        // cannot be loaded are the disk's own artwork: they are drawn, but
+        // never marked as selected.
+        if (!item.petscii.empty()) {
+            float glyphY = rowY + static_cast<float>(rowH - 8 * PETSCII_SCALE) / 2.0f;
+            pax_draw_petscii(fb, Theme::TEXT_PRIMARY, PETSCII_COL_X, glyphY, item.petscii, PETSCII_SCALE);
+            if (!inert && !item.title.empty()) {
+                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, bodySize, BLOCKS_X, textY,
+                              item.title.c_str());
             }
-            pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + row * 20, 800, 20);
-            pax_draw_text(fb, color, pax_font_saira_regular, 18, 30, 60 + row * 20, title.c_str());
+            continue;
+        }
+
+        if (inert) {
+            // A separator with nothing to say is a hairline, not a blank gap.
+            if (item.title.empty()) {
+                pax_draw_rect(fb, Theme::HAIRLINE, Theme::SIDE_PAD, rowY + static_cast<float>(rowH) / 2.0f,
+                              Theme::SCREEN_W - 2 * Theme::SIDE_PAD, 1);
+            } else {
+                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, bodySize, Theme::SIDE_PAD,
+                              textY, item.title.c_str());
+            }
+            continue;
+        }
+
+        // The titles carry a trailing ": " from when the value was glued onto
+        // the end of them. The value has a column of its own now, so drop it.
+        std::string title = item.title;
+        while (!title.empty() && (title.back() == ' ' || title.back() == ':')) title.pop_back();
+
+        pax_draw_text(fb, Theme::TEXT_PRIMARY, pax_font_saira_regular, bodySize, Theme::SIDE_PAD, textY,
+                      title.c_str());
+
+        if (item.type == MenuItemType::TOGGLE) {
+            bool checked = menuDataStore->getBool(item.value_name, false);
+            pax_draw_text(fb, checked ? Theme::ACCENT : Theme::TEXT_MUTED, pax_font_saira_regular, bodySize,
+                          Theme::VALUE_COL, textY, checked ? "On" : "Off");
         }
     }
 
-    // Say where we are in a list that does not fit, so paging through a card
-    // full of programs is not done blind.
-    if (full_update && total > MENU_ROWS) {
-        char counter[48];
-        snprintf(counter, sizeof(counter), "%u-%u of %u", static_cast<unsigned>(first + 1),
-                 static_cast<unsigned>(first + rows), static_cast<unsigned>(total));
-        pax_draw_rect(fb, 0xFFFFFFFF, 600, 10, 200, 20);
-        pax_draw_text(fb, 0xFFFFFFFF, pax_font_saira_regular, 18, 640, 10, counter);
+    prevJoystick = currentJoystick;
+}
+
+// The frame around the list: the ground, the bar with the screen's name, and
+// the strip of key hints along the bottom. Drawn only on a full update, since
+// nothing in it changes as the selection moves.
+void MenuController::drawChrome(int currentJoystick)
+{
+    pax_background(fb, Theme::BACKGROUND);
+
+    pax_draw_rect(fb, Theme::SURFACE, 0, 0, Theme::SCREEN_W, Theme::TOPBAR_H);
+    pax_draw_rect(fb, Theme::HAIRLINE, 0, Theme::TOPBAR_H - 1, Theme::SCREEN_W, 1);
+    pax_draw_text(fb, Theme::TEXT_PRIMARY, pax_font_saira_regular, Theme::TITLE_SIZE, Theme::SIDE_PAD,
+                  static_cast<float>(Theme::TOPBAR_H - Theme::TITLE_SIZE) / 2.0f, currentMenu->getTitle().c_str());
+
+    float hintY = static_cast<float>(Theme::SCREEN_H - Theme::HINTBAR_H);
+    pax_draw_rect(fb, Theme::SURFACE, 0, hintY, Theme::SCREEN_W, Theme::HINTBAR_H);
+    pax_draw_rect(fb, Theme::HAIRLINE, 0, hintY, Theme::SCREEN_W, 1);
+
+    float textY = hintY + static_cast<float>(Theme::HINTBAR_H - Theme::BODY_SIZE) / 2.0f;
+    float iconY = hintY + 4;
+
+    pax_draw_image(fb, get_icon(ICON_F6), Theme::SIDE_PAD, iconY);
+    pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE, Theme::SIDE_PAD + 40, textY,
+                  "Back to the Commodore 64");
+
+    if (currentMenu == rootMenu) {
+        char port[40];
+        snprintf(port, sizeof(port), "Joystick port %d", currentJoystick);
+        pax_draw_image(fb, get_icon(ICON_F5), 320, iconY);
+        pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE, 360, textY, port);
     }
+}
 
-    size_t i = rows;
+// How much of the list is on screen, and where. A thumb in the margin says it
+// without spending a row on "1-20 of 144".
+void MenuController::drawScrollbar(size_t first, size_t rows, size_t total, size_t visible)
+{
+    (void)rows;
+    if (total <= visible) return;
 
-    if (currentMenu == rootMenu && (full_update || prevJoystick != currentJoystick)) {
-        i += 2;
-        pax_draw_rect(fb, 0xFFFFFFFF, 0, 60 + i * 20, 800, 480 - 60 - i * 20);
-        pax_draw_line(fb, 0xFFFF0000, 0, 60 + i * 20, 800, 60 + i * 20);
-        i += 1;
-        pax_draw_image(fb, get_icon(ICON_F6), 10, 60 + i * 20);
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
-                      "Switch between this menu and the Commodore 64");
-        i += 1;
-        pax_draw_image(fb, get_icon(ICON_F5), 10, 60 + i * 20);
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 40, 60 + i * 20 + 8,
-                      ("Switch joystick emulation between joystick port 1 and 2, current port: " +
-                       std::to_string(currentJoystick))
-                          .c_str());
+    float x      = static_cast<float>(Theme::SCREEN_W - Theme::SCROLL_INSET - Theme::SCROLL_W);
+    float trackY = static_cast<float>(Theme::CONTENT_Y + Theme::SCROLL_INSET);
+    float trackH = static_cast<float>(Theme::CONTENT_H - 2 * Theme::SCROLL_INSET);
 
-        i += 2;
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      "To enable joystick emulation set 'Joystick emulation' to 'On' in this menu.\n"
-                      "With 'Two players' on, the keyboard joystick keeps the port shown above and a USB\n"
-                      "gamepad takes the other one, so two people can play at the same time.\n"
-                      "You can change the volume of the speaker and headphone output using the volume up\n"
-                      "and down keys on the right side of the device.\n");
-        i += 6;
+    pax_draw_rect(fb, Theme::HAIRLINE, x, trackY, Theme::SCROLL_W, trackH);
 
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      " - PRG, T64 and D64 files load; a D64 can also be mounted as drive 8.");
+    float frac   = static_cast<float>(visible) / static_cast<float>(total);
+    float thumbH = trackH * frac;
+    if (thumbH < 16.0f) thumbH = 16.0f;
+    float pos = static_cast<float>(first) / static_cast<float>(total - visible);
 
-        i += 1;
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      " - Connecting an USB keyboard to the USB-A port is also supported");
-        i += 1;
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      " - Joystick emulation uses left shift for fire, arrow keys");
-        i += 1;
-        pax_draw_text(fb, 0xFF002255, pax_font_saira_regular, 18, 10, 60 + i * 20,
-                      " - ('/' and right shift input left + up and right + up respectively)");
-
-        prevJoystick = currentJoystick;
-    }
+    pax_draw_rect(fb, Theme::ACCENT, x, trackY + pos * (trackH - thumbH), Theme::SCROLL_W, thumbH);
 }
 
 void MenuController::setCurrentMenu(MenuBaseClass* menu)

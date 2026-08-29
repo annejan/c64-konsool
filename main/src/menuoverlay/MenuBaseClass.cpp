@@ -123,3 +123,8 @@ void MenuBaseClass::activateItem(uint16_t id)
             break;
     }
 }
+
+int MenuBaseClass::rowHeight() const
+{
+    return Theme::ROW_H;
+}

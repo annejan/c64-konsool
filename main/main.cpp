@@ -29,6 +29,10 @@
 // #include "hal/gpio_types.h"
 // #include "hal/usb_serial_jtag_ll.h"
 #include "freertos/projdefs.h"
+#include "esp_app_desc.h"
+#include "menuoverlay/Theme.hpp"
+#include "pax_gfx.h"
+#include "pax_text.h"
 #include "pax_types.h"
 #include "portmacro.h"
 // #include "targets/tanmatsu/tanmatsu_hardware.h"
@@ -140,35 +144,73 @@ extern "C" void app_main(void)
     pax_buf_reversed(&framebuffer, false);
     pax_buf_set_orientation(&framebuffer, PAX_O_ROT_CW);
 
-    pax_background(&framebuffer, 0xFFFFFFFF);
-
-    // Commodore C= logo centered on 800x480.
-    // SVG canvas 130x122, scaled 3x → 390x366, offset (205,57) to center on 800x480.
-    // C shape: outer circle r=61, inner r=32, both centered at SVG (61,61). Opens right at SVG x=78.
-    // Bars: upper blue trapezoid (78,34)→(130,34)→(106,58)→(78,58),
-    //        lower red trapezoid  (78,64)→(106,64)→(130,88)→(78,88). (SVG coords after translate -5,-9)
+    // The boot mark: the Commodore C=, on the same ground the menu uses. Drawn
+    // rather than loaded, because a logo that can fail to appear is worse than
+    // a plain one -- the icons under /int/icons are read at runtime and
+    // icons.c already has a path for them being missing.
+    //
+    // SVG canvas 130x122, scaled 2x to 260x244 and centred, with the name set
+    // underneath. C shape: outer circle r=61, inner r=32, both centred at SVG
+    // (61,61), opening to the right at SVG x=78. Bars: upper trapezoid
+    // (78,34)->(130,34)->(106,58)->(78,58), lower (78,64)->(106,64)->(130,88)
+    // ->(78,88), in SVG coordinates after translate -5,-9.
     {
-        const pax_col_t C_BLUE = 0xFF002255;
-        const pax_col_t C_RED  = 0xFFFF0000;
-        const pax_col_t C_BG   = 0xFFFFFFFF;
-        const float     S      = 3.0f;
-        const float     OX     = 205.0f;
-        const float     OY     = 57.0f;
+        const pax_col_t C_BLUE = Theme::ACCENT;
+        const pax_col_t C_RED  = Theme::DANGER;
+        const pax_col_t C_BG   = Theme::BACKGROUND;
+        const float     S      = 2.0f;
+        const float     OX     = (800.0f - 130.0f * S) / 2.0f;
+        const float     OY     = 74.0f;
         auto            sx     = [=](float x) { return x * S + OX; };
         auto            sy     = [=](float y) { return y * S + OY; };
 
-        // Outer disk (dark blue), erase inner disk, erase right side to open the C
+        pax_background(&framebuffer, C_BG);
+
+        // Outer disk, erase the inner disk, then erase the right side to open
+        // the C. Painting the cut-outs in the background colour is what keeps
+        // the ring an even width without drawing an arc.
         pax_draw_circle(&framebuffer, C_BLUE, sx(61), sy(61), 61 * S);
         pax_draw_circle(&framebuffer, C_BG, sx(61), sy(61), 32 * S);
-        pax_draw_rect(&framebuffer, C_BG, sx(78), sy(0), 200, 122 * S);
+        pax_draw_rect(&framebuffer, C_BG, sx(78), sy(0), 200 * S, 122 * S);
 
-        // Upper "=" bar (dark blue): (78,34)→(130,34)→(106,58)→(78,58)
+        // Upper "=" bar
         pax_draw_tri(&framebuffer, C_BLUE, sx(78), sy(34), sx(130), sy(34), sx(78), sy(58));
         pax_draw_tri(&framebuffer, C_BLUE, sx(130), sy(34), sx(106), sy(58), sx(78), sy(58));
 
-        // Lower "=" bar (red): (78,64)→(106,64)→(130,88)→(78,88)
+        // Lower "=" bar
         pax_draw_tri(&framebuffer, C_RED, sx(78), sy(64), sx(106), sy(64), sx(78), sy(88));
         pax_draw_tri(&framebuffer, C_RED, sx(106), sy(64), sx(130), sy(88), sx(78), sy(88));
+
+        // The name, centred on the real measured width rather than a guess.
+        const char* name = "Konsool 64";
+        const char* sub  = "COMMODORE 64 EMULATOR";
+        const float NAME_SIZE = 36.0f;
+        pax_vec2f   nsz       = pax_text_size(pax_font_saira_regular, NAME_SIZE, name);
+        pax_vec2f   ssz       = pax_text_size(pax_font_saira_regular, Theme::BODY_SIZE, sub);
+
+        // Centre on the measured width, but never off the side of the screen:
+        // a measurement that comes back as zero or nonsense would otherwise
+        // put the text where it cannot be seen.
+        auto centre = [](float w, float fallback) {
+            float x = (800.0f - (w > 1.0f ? w : fallback)) / 2.0f;
+            return x < 20.0f ? 20.0f : x;
+        };
+        pax_draw_text(&framebuffer, Theme::TEXT_PRIMARY, pax_font_saira_regular, NAME_SIZE,
+                      centre(nsz.x, NAME_SIZE * 0.55f * 10), sy(122) + 24.0f, name);
+        pax_draw_text(&framebuffer, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE,
+                      centre(ssz.x, Theme::BODY_SIZE * 0.55f * 21), sy(122) + 74.0f, sub);
+
+        // Which build this actually is. The version esp-idf puts in the image
+        // is "git describe" of the tree it came from, so it names the commit
+        // and says "-dirty" when it was built over uncommitted changes, which
+        // is what you want to know when a badge has been reflashed all
+        // evening and the launcher only shows an AppFS version number.
+        const esp_app_desc_t* app = esp_app_get_description();
+        if (app != nullptr) {
+            pax_vec2f vsz = pax_text_size(pax_font_saira_regular, 16, app->version);
+            pax_draw_text(&framebuffer, Theme::TEXT_MUTED, pax_font_saira_regular, 16,
+                          centre(vsz.x, 16 * 0.55f * 16), sy(122) + 104.0f, app->version);
+        }
     }
 
     esp_lcd_panel_handle_t display_lcd_panel;

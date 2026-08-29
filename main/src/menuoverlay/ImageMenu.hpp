@@ -24,6 +24,13 @@ class ImageMenu : public MenuBaseClass {
     bool isDisk = false;
 
    public:
+    // A disk directory runs to a hundred and forty entries, so it takes the
+    // dense row and shows sixteen at a time instead of eleven.
+    int rowHeight() const override
+    {
+        return Theme::ROW_H_DENSE;
+    }
+
     ImageMenu(std::string title, MenuBaseClass* previousMenu, MenuController* menuController);
     ~ImageMenu() override;
 

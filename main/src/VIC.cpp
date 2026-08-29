@@ -790,6 +790,14 @@ void IRAM_ATTR VIC::drawRasterline()
             } else if (ecm && (!mcm)) {
                 uint8_t bgColArr[] = {vicreg[0x21], vicreg[0x22], vicreg[0x23], vicreg[0x24]};
                 drawExtBGColCharMode(ram + screenmemstart, bgColArr, dline, deltay - 3, deltax);
+            } else {
+                // ECM and MCM together is one of the VIC's invalid modes: the
+                // chip outputs black. Drawing nothing left whatever the last
+                // frame put in this row of the buffer.
+                uint16_t idx = static_cast<uint16_t>(dline) * 320;
+                for (uint16_t i = 0; i < 320; i++) {
+                    bitmap[idx++] = tftColorFromC64ColorArr[0];
+                }
             }
         }
         drawSprites(rasterline);

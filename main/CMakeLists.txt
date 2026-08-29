@@ -35,6 +35,7 @@ idf_component_register(
 		"global_event_handler.c"
 		"icons.c"
 	PRIV_REQUIRES
+		esp_app_format
 		esp_lcd
 		esp_adc
 		esp_driver_ppa
