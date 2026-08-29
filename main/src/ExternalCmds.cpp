@@ -75,6 +75,16 @@ void ExternalCmds::init(uint8_t* ram, C64Emu* c64emu) {
     // Setup SDCard
     // TODO: implement detection of insert and remove SD card
     sdcard.init();
+
+    // Switch the real drive on for the whole session when its ROM is on the
+    // card. Waiting for a disk to go in was too late to be useful: the menu
+    // toggle still read off until something had been mounted, and a program
+    // started from a .prg had no drive 8 at all. A card without the ROM is
+    // unchanged, and the toggle still switches it off by hand.
+    if (loadDriveRom() && setTrueDriveEmulation(true)) {
+        MenuDataStore::getInstance()->set("true_drive_ena", true);
+        ESP_LOGI(TAG, "1541 emulation on, %s found", DRIVE_ROM_FILENAME);
+    }
 }
 
 void ExternalCmds::setType1Notification() {

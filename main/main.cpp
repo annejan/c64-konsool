@@ -183,12 +183,21 @@ extern "C" void app_main(void)
         // The name, centred on the real measured width rather than a guess.
         const char* name = "Konsool 64";
         const char* sub  = "COMMODORE 64 EMULATOR";
-        pax_vec2f   nsz  = pax_text_size(pax_font_saira_regular, 40, name);
-        pax_vec2f   ssz  = pax_text_size(pax_font_saira_regular, Theme::BODY_SIZE, sub);
-        pax_draw_text(&framebuffer, Theme::TEXT_PRIMARY, pax_font_saira_regular, 40, (800.0f - nsz.x) / 2.0f,
-                      sy(122) + 28.0f, name);
+        const float NAME_SIZE = 36.0f;
+        pax_vec2f   nsz       = pax_text_size(pax_font_saira_regular, NAME_SIZE, name);
+        pax_vec2f   ssz       = pax_text_size(pax_font_saira_regular, Theme::BODY_SIZE, sub);
+
+        // Centre on the measured width, but never off the side of the screen:
+        // a measurement that comes back as zero or nonsense would otherwise
+        // put the text where it cannot be seen.
+        auto centre = [](float w, float fallback) {
+            float x = (800.0f - (w > 1.0f ? w : fallback)) / 2.0f;
+            return x < 20.0f ? 20.0f : x;
+        };
+        pax_draw_text(&framebuffer, Theme::TEXT_PRIMARY, pax_font_saira_regular, NAME_SIZE,
+                      centre(nsz.x, NAME_SIZE * 0.55f * 10), sy(122) + 24.0f, name);
         pax_draw_text(&framebuffer, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE,
-                      (800.0f - ssz.x) / 2.0f, sy(122) + 82.0f, sub);
+                      centre(ssz.x, Theme::BODY_SIZE * 0.55f * 21), sy(122) + 74.0f, sub);
     }
 
     esp_lcd_panel_handle_t display_lcd_panel;
