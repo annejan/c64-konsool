@@ -25,5 +25,10 @@ class HeadlessDisplay : public DisplayDriver {
     const uint16_t* getC64Colors() const override { return colors; }
 
     // The sixteen C64 colours as RGB565, the same order the emulator uses.
-    static const uint16_t colors[16];
+    // Defined here rather than in the runner so that anything including this
+    // header links, tests included.
+    static constexpr uint16_t colors[16] = {
+        0x0000, 0xFFFF, 0x8000, 0x07FF, 0x8010, 0x0400, 0x0010, 0xFFE0,
+        0xFC00, 0x8200, 0xFA10, 0x4208, 0x8410, 0x07E0, 0x421F, 0xA534,
+    };
 };
