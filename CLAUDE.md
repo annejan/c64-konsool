@@ -347,9 +347,34 @@ headers, but the DOS decodes them through its own table and only checks the
 result; this loader folds the raw GCR and demands an exact answer, so it is a
 far stricter reader of the same bytes.
 
-`Gcr.cpp` is where the header block is built. VICE plays the same `.d64`, so
-comparing the bytes it lays down for one header against these four would settle
-it outright.
+### The surface is not the difference
+
+That comparison has now been made, and the encoder and the track layout are
+identical to VICE's:
+
+- `gcrConv4` against VICE's `gcr_convert_4bytes_to_GCR`, compiled side by side
+  and fed the same input: **5145 headers and 65536 arbitrary quads, zero
+  differing bytes**.
+- Header block: `[$08, sector ^ track ^ id2 ^ id1, sector, track]` then
+  `[id2, id1, $0f, $0f]`, the same order and the same checksum as
+  `gcr_convert_sector_to_GCR`.
+- Sync 5 bytes and header gap 9, matching `disk_image_sync_size` and
+  `disk_image_header_gap_size` for a D64.
+- Tail gaps `{9, 12, 17, 8}`, matching `gap_size_d64`.
+- The whole track filled with `$55` before the sectors are written, as
+  `fsimage-dxx.c` does, and the same stride: 354 plus the tail gap.
+
+So the bytes on the emulated surface are right, and the header the loader reads
+is the header VICE would give it.
+
+What that leaves is the drivecode's own state. The check at `$05f2` folds the
+header against `$b1,Y`, `$93` and a pointer at `$57`, all of which the loader
+set up earlier -- and everything at `$0500`-`$07ff` arrived over the serial bus
+through the `$dd02` transfer loop at `$3848`. If a byte of that upload is wrong,
+the tables are wrong and no header will ever satisfy the check, which is exactly
+the symptom. Comparing the uploaded drivecode against a known good copy is the
+next thing to try, and note that the MCP build exposes no drive bank, so that
+comparison needs another route.
 
 ## VICE as an oracle, through the MCP build
 
