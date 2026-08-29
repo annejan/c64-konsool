@@ -258,3 +258,185 @@ it decodes to the wrong byte and the loader spins for ever.
 which rules the opcodes out as the cause of the Sparkle demos hanging and
 leaves the disk side, where this emulation is byte granular and VICE is bit
 granular.
+
+## The Lab: a deadlock that is a timing relationship, not a wrong line
+
+Reproduces on the host build, and is characterised down to both sides' code.
+It is written down because everything about it points at *when* things happen
+rather than at any one wrong value, and the next attempt should start here
+rather than re-deriving it.
+
+The C64 calls the loader's init at `$3800`. That routine patches itself, then
+ends:
+
+```
+398D  A9 3F     LDA #$3F
+398F  8D 02 DD  STA $DD02      ; DDRA: drive the bus
+3992  AD 00 DD  LDA $DD00
+3995  10 FB     BPL $3992      ; wait for DATA to be released
+3997  60        RTS
+```
+
+The drive, meanwhile, is running uploaded code. Its preamble at `$0600` posts
+job-queue reads, waits for each to come back `$01`, does `SEI`, sets `DDRB=$7a`
+and `PCR=$ee`, and falls into:
+
+```
+0640  A2 C0     LDX #$C0
+0642  8E 0E 1C  STX $1C0E      ; arm T1 on both VIAs, for later
+0645  8E 0E 18  STX $180E
+0648  0A        ASL A          ; A is $01 from LDA #$01 at $0628
+0649  8D 00 18  STA $1800      ; $02: PB1 high, so DATA is pulled LOW
+064C  2C 00 18  BIT $1800
+064F  10 FB     BPL $064C      ; wait for PB7, which is ATN asserted
+```
+
+So the C64 waits for DATA and the drive waits for ATN, with interrupts off on
+the drive (`I=1` measured), so nothing else can move either.
+
+The ordering is the interesting part. Measured with an instruction counter
+shared between both CPUs:
+
+    t=3067705   ATN released, the end of the KERNAL's UNLISTEN
+    t=3277932   drive reaches $0640 and pulls DATA low
+    t=3386053   C64 reaches $3992 and sees DATA=LOW, ATN=high
+
+The C64 arrives **after** the drive has already gone busy. On hardware it has
+to arrive before, find DATA still high, return from `$3800`, and only then
+assert ATN, which releases the drive. Our drive gets to `$0640` about 110k
+instructions too early relative to the C64 -- or the C64 gets there too late.
+
+What has been ruled out, so do not spend time on it again:
+
+- All four bus polarities match Frodo: the C64's output (`~pra & ddra`), the
+  drive's DATA/CLK from PB1/PB3, the ATN acknowledge gate, and ATN arriving on
+  PB7 set when asserted. `$dd00` bit 7 also reads set when DATA is released,
+  as Frodo's `MOS6526_2::ReadRegister` does.
+- `A=$01` at `$0640` is correct: it comes from `LDA #$01` at `$0628`, so the
+  drive really is meant to pull DATA and wait.
+- The undocumented opcodes the drivecode uses are result-tested and pass.
+- It is not an interrupt that never fires: the drive has `I=1` there and is
+  polling on purpose.
+
+### Measured, and what it rules out
+
+The C64 side, disassembled, is a two-stage handshake:
+
+```
+3839  A9 C3     LDA #$C3
+383B  8D 00 DD  STA $DD00      ; releases ATN: bit 3 clear
+383E  A9 3F     LDA #$3F
+3840  8D 02 DD  STA $DD02
+3843  2C 00 DD  BIT $DD00
+3846  30 FB     BMI $3843      ; wait for DATA to go LOW: the drive saying it is there
+3848 ...                       ; then a transfer loop that bit bangs $DD02 alone,
+                               ; writing $1f or $0f, which moves CLK between
+                               ; driven-zero and input while $DD00 stays $C3
+3992  AD 00 DD  LDA $DD00
+3995  10 FB     BPL $3992      ; then wait for DATA to be released again
+```
+
+That transfer loop is why a line left as an input has to pull low: the loader
+never writes `$DD00` again, and toggling `$DD02` is the whole signal.
+
+The drive's jobs, timed on the shared counter (C64 instructions):
+
+    t=3011133  posted b0 seek  track 18   -> ok after   4600
+    t=3015837  posted 80 read  track 18   -> ok after  36393
+    t=3134112  posted b0 seek  track 17   -> ok after  36813
+    t=3170996  posted 80 read  track 18   -> ok after 106852
+    t=3277932  drivecode reaches $0640, pulls DATA low
+    t=3386053  C64 reaches $3992
+
+ATN is released at t=3067705, which is **before the third job is even posted**.
+So no plausible change to job or rotation timing gets the drivecode to its ATN
+wait while ATN is still low, and the "the drive is too slow" reading is wrong.
+The C64 releases ATN at `$383B`, before it waits for DATA at `$3843`, so on
+hardware ATN is long gone by the time the drive pulls DATA either.
+
+Which means the model of that `BIT $1800 / BPL $064C` wait is wrong somewhere,
+not the timing around it. On the reading used here -- VIA1 PB7 set when ATN is
+asserted -- the loop cannot exit at all, and the demo would hang on hardware
+too. It runs on hardware **and in VICE**, so the fault is ours.
+
+### Checked against VICE as well as Frodo, and matching
+
+VICE's own source is worth fetching for this; it is not in the tree. The files
+that matter are `src/drive/iec/via1d1541.c`, `src/iecbus.h` and
+`src/c64/c64cia2.c` from `github.com/VICE-Team/svn-mirror` under `vice/`.
+
+- The drive reads port B as `(drv_port ^ 0x85) | 0x1a | driveid`, then
+  `(PRB & DDRB) | (tmp & ~DDRB)`. The `^ 0x85` inverts DATA, CLK and ATN, so
+  **PB7 is set when ATN is asserted**, agreeing with Frodo. `IECBUS_DEVICE_READ_ATN`
+  being `0x80` and set in `iecbus_init` is the idle bus *before* that inversion,
+  which is easy to misread as the opposite.
+- Output bits read back the latch and only input bits read the bus. `Via6522::read`
+  does exactly this already.
+- The C64 side hands the bus `~byte` where byte is the port A *pin* value, which
+  is the same `~pra & ddra` Frodo uses and the same this code now uses.
+
+So the drive's PB7 polarity, the port B read-back rule and the C64's output
+formula are all confirmed against two reference emulators and all match. The
+disagreement is somewhere else, and it is not any of:
+
+- the four bus polarities, the `$dd00` read, or the port B read-back
+- `A=$01` at the drivecode's entry, which is `LDA #$01` at `$0628`
+- the undocumented opcodes, which are result-tested
+- an interrupt that never fires: the drive has `I=1` there and polls on purpose
+- job or rotation timing, per the measurements above
+
+What is left, and what the next attempt should establish first, is where ATN
+comes from at all after `$383B` releases it. Over a whole run ATN changes 30
+times, all of them during the KERNAL LOAD, and never again. Either the C64 is
+meant to assert it later and does not get there, or the drive is meant to reach
+`$064c` while it is still low. Instrumenting VICE's own drive PC at that moment
+would answer it in one run and is cheaper than any more reasoning from here.
+
+## VICE as an oracle, through the MCP build
+
+The plain `x64sc` on this machine renders nothing headless: `-exitscreenshot`
+comes back as an all but black frame with `-console`, with `SDL_VIDEODRIVER=dummy`,
+under Xvfb, with `-default`, and with a monitor breakpoint driving `screenshot`.
+Do not spend time on it again.
+
+What does work is `~/Projects/vice-mcp`, a VICE build with an MCP server compiled
+in. The binary is `vice/build-test-with-mcp/src/x64sc` and it needs a display, so
+Xvfb is still required:
+
+```bash
+Xvfb :99 -screen 0 1024x768x24 &
+DISPLAY=:99 x64sc -mcpserver -warp &      # serves http://127.0.0.1:6510/mcp
+```
+
+Then POST JSON-RPC 2.0 at `/mcp`: `tools/list` enumerates 64 tools, and
+`tools/call` runs them. The useful ones here are `vice_autostart`,
+`vice_checkpoint_add` (exec, load or store, so watchpoints too),
+`vice_registers_get`, `vice_cia_get_state`, `vice_memory_read`,
+`vice_disassemble` and `vice_display_screenshot`.
+
+Three traps, each of which cost a run:
+
+- **`sleep` is unavailable in this environment and `read -t 1 < /dev/zero`
+  returns instantly**, so a wait loop built from it does not wait at all.
+  `python3 -c "import time; time.sleep(3)"` does.
+- **`pkill -f x64sc` matches the shell running it** and kills the caller. Use
+  `pkill -x`, or put the commands in a script file.
+- A checkpoint pauses the machine, and it stays paused. Poll `vice_ping` for
+  `execution` and call `vice_execution_run` again, or nothing moves and every
+  reading is of a halted machine.
+
+Only the C64 is exposed: `vice_memory_banks` reports cpu, ram, rom, io and cart,
+with no drive bank, so the 1541's RAM and PC cannot be read this way. Comparisons
+have to be made on the C64 side.
+
+### What it has already settled about The Lab
+
+At `$3843`, the wait for DATA to go low, VICE reports `port_a=$c3 ddr_a=$3f` --
+exactly what this emulator has there. So the C64's side of the handshake is set
+up identically in both, and the divergence is after `$3846`, not before it.
+VICE cycles through `$3843`/`$3846` repeatedly while the demo runs, and reaches
+the demo proper; this emulator gets there too and then sticks at `$3992`.
+
+The next experiment is to checkpoint `$3992` in VICE from before the autostart
+and establish whether it is ever executed at all, then trace forward from
+`$3846` in both and find the first instruction that differs.
