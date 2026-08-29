@@ -167,3 +167,6 @@ main/src/test/cycle_test
 *.d64
 *.t64
 *.prg
+
+# Host build screen dumps
+screen.ppm
