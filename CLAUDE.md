@@ -391,3 +391,52 @@ times, all of them during the KERNAL LOAD, and never again. Either the C64 is
 meant to assert it later and does not get there, or the drive is meant to reach
 `$064c` while it is still low. Instrumenting VICE's own drive PC at that moment
 would answer it in one run and is cheaper than any more reasoning from here.
+
+## VICE as an oracle, through the MCP build
+
+The plain `x64sc` on this machine renders nothing headless: `-exitscreenshot`
+comes back as an all but black frame with `-console`, with `SDL_VIDEODRIVER=dummy`,
+under Xvfb, with `-default`, and with a monitor breakpoint driving `screenshot`.
+Do not spend time on it again.
+
+What does work is `~/Projects/vice-mcp`, a VICE build with an MCP server compiled
+in. The binary is `vice/build-test-with-mcp/src/x64sc` and it needs a display, so
+Xvfb is still required:
+
+```bash
+Xvfb :99 -screen 0 1024x768x24 &
+DISPLAY=:99 x64sc -mcpserver -warp &      # serves http://127.0.0.1:6510/mcp
+```
+
+Then POST JSON-RPC 2.0 at `/mcp`: `tools/list` enumerates 64 tools, and
+`tools/call` runs them. The useful ones here are `vice_autostart`,
+`vice_checkpoint_add` (exec, load or store, so watchpoints too),
+`vice_registers_get`, `vice_cia_get_state`, `vice_memory_read`,
+`vice_disassemble` and `vice_display_screenshot`.
+
+Three traps, each of which cost a run:
+
+- **`sleep` is unavailable in this environment and `read -t 1 < /dev/zero`
+  returns instantly**, so a wait loop built from it does not wait at all.
+  `python3 -c "import time; time.sleep(3)"` does.
+- **`pkill -f x64sc` matches the shell running it** and kills the caller. Use
+  `pkill -x`, or put the commands in a script file.
+- A checkpoint pauses the machine, and it stays paused. Poll `vice_ping` for
+  `execution` and call `vice_execution_run` again, or nothing moves and every
+  reading is of a halted machine.
+
+Only the C64 is exposed: `vice_memory_banks` reports cpu, ram, rom, io and cart,
+with no drive bank, so the 1541's RAM and PC cannot be read this way. Comparisons
+have to be made on the C64 side.
+
+### What it has already settled about The Lab
+
+At `$3843`, the wait for DATA to go low, VICE reports `port_a=$c3 ddr_a=$3f` --
+exactly what this emulator has there. So the C64's side of the handshake is set
+up identically in both, and the divergence is after `$3846`, not before it.
+VICE cycles through `$3843`/`$3846` repeatedly while the demo runs, and reaches
+the demo proper; this emulator gets there too and then sticks at `$3992`.
+
+The next experiment is to checkpoint `$3992` in VICE from before the autostart
+and establish whether it is ever executed at all, then trace forward from
+`$3846` in both and find the first instruction that differs.
