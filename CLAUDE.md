@@ -258,3 +258,66 @@ it decodes to the wrong byte and the loader spins for ever.
 which rules the opcodes out as the cause of the Sparkle demos hanging and
 leaves the disk side, where this emulation is byte granular and VICE is bit
 granular.
+
+## The Lab: a deadlock that is a timing relationship, not a wrong line
+
+Reproduces on the host build, and is characterised down to both sides' code.
+It is written down because everything about it points at *when* things happen
+rather than at any one wrong value, and the next attempt should start here
+rather than re-deriving it.
+
+The C64 calls the loader's init at `$3800`. That routine patches itself, then
+ends:
+
+```
+398D  A9 3F     LDA #$3F
+398F  8D 02 DD  STA $DD02      ; DDRA: drive the bus
+3992  AD 00 DD  LDA $DD00
+3995  10 FB     BPL $3992      ; wait for DATA to be released
+3997  60        RTS
+```
+
+The drive, meanwhile, is running uploaded code. Its preamble at `$0600` posts
+job-queue reads, waits for each to come back `$01`, does `SEI`, sets `DDRB=$7a`
+and `PCR=$ee`, and falls into:
+
+```
+0640  A2 C0     LDX #$C0
+0642  8E 0E 1C  STX $1C0E      ; arm T1 on both VIAs, for later
+0645  8E 0E 18  STX $180E
+0648  0A        ASL A          ; A is $01 from LDA #$01 at $0628
+0649  8D 00 18  STA $1800      ; $02: PB1 high, so DATA is pulled LOW
+064C  2C 00 18  BIT $1800
+064F  10 FB     BPL $064C      ; wait for PB7, which is ATN asserted
+```
+
+So the C64 waits for DATA and the drive waits for ATN, with interrupts off on
+the drive (`I=1` measured), so nothing else can move either.
+
+The ordering is the interesting part. Measured with an instruction counter
+shared between both CPUs:
+
+    t=3067705   ATN released, the end of the KERNAL's UNLISTEN
+    t=3277932   drive reaches $0640 and pulls DATA low
+    t=3386053   C64 reaches $3992 and sees DATA=LOW, ATN=high
+
+The C64 arrives **after** the drive has already gone busy. On hardware it has
+to arrive before, find DATA still high, return from `$3800`, and only then
+assert ATN, which releases the drive. Our drive gets to `$0640` about 110k
+instructions too early relative to the C64 -- or the C64 gets there too late.
+
+What has been ruled out, so do not spend time on it again:
+
+- All four bus polarities match Frodo: the C64's output (`~pra & ddra`), the
+  drive's DATA/CLK from PB1/PB3, the ATN acknowledge gate, and ATN arriving on
+  PB7 set when asserted. `$dd00` bit 7 also reads set when DATA is released,
+  as Frodo's `MOS6526_2::ReadRegister` does.
+- `A=$01` at `$0640` is correct: it comes from `LDA #$01` at `$0628`, so the
+  drive really is meant to pull DATA and wait.
+- The undocumented opcodes the drivecode uses are result-tested and pass.
+- It is not an interrupt that never fires: the drive has `I=1` there and is
+  polling on purpose.
+
+The lead worth following is what makes the drive's preamble finish early. It
+spends its time in job-queue reads, so it is disk rotation and job timing that
+decide when `$0640` is reached, not the CPU.
