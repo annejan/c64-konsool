@@ -88,13 +88,20 @@ void Drive1541::updateIecOutputs()
 // whether to move in or out.
 void Drive1541::updateStepper(uint8_t portB)
 {
+    // The stepper only turns while the motor is running, and only a single
+    // step moves the head: energising the coil two places round pulls it
+    // equally both ways and it stays put. VICE does both
+    // (src/drive/iecieee/via2d.c, store_prb), and this used to do neither, so
+    // a double step walked the head outward instead of leaving it alone.
+    if ((portB & VIA2_MOTOR) == 0) return;
+
     uint8_t phase = static_cast<uint8_t>(portB & VIA2_STEP_MASK);
     if (phase == lastStepperPhase) return;
 
-    uint8_t forward = static_cast<uint8_t>((lastStepperPhase + 1) & VIA2_STEP_MASK);
-    if (phase == forward) {
+    uint8_t delta = static_cast<uint8_t>((phase - lastStepperPhase) & VIA2_STEP_MASK);
+    if (delta == 1) {
         controller.moveHeadIn();
-    } else {
+    } else if (delta == 3) {
         controller.moveHeadOut();
     }
     lastStepperPhase = phase;
