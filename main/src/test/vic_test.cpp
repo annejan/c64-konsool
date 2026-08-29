@@ -356,6 +356,74 @@ static void testMulticolourZeroOneIsBackground()
     CHECK(hits > 0, "a sprite with background priority was hidden by bit pair 01, which is not foreground");
 }
 
+
+// Multicolour text takes its four colours from four different places, and
+// getting one of them from the wrong register is invisible until a demo uses
+// it: 00 is the background, 01 is $d022, 10 is $d023 and 11 is the low three
+// bits of colour RAM. Each pair is two pixels wide.
+static void testMulticolourTextColours()
+{
+    printf("VIC: multicolour text takes 01 from $d022, 10 from $d023, 11 from colour RAM\n");
+    Machine m;
+
+    // One glyph byte covering all four pairs, in order: 00 01 10 11.
+    for (int i = 0; i < 8; i++) ram[0x0800 + i] = 0x1b;
+    for (int i = 0; i < 1000; i++) {
+        ram[0x0400 + i]   = 0x00;
+        m.vic.colormap[i] = 0x0f;  // bit 3 makes the cell multicolour, 7 is the colour
+    }
+    m.vic.charset      = ram + 0x0800;
+    m.vic.vicreg[0x16] = 0x18;  // multicolour, 40 columns
+    m.vic.vicreg[0x21] = 0x00;  // 00 -> black
+    m.vic.vicreg[0x22] = 0x02;  // 01 -> red
+    m.vic.vicreg[0x23] = 0x03;  // 10 -> cyan
+    m.drawFrame();
+
+    const uint16_t* pal  = HeadlessDisplay::colors;
+    const uint16_t  want[4] = {pal[0], pal[2], pal[3], pal[7]};
+    const char*     from[4] = {"$d021", "$d022", "$d023", "colour RAM"};
+
+    for (int pair = 0; pair < 4; pair++) {
+        // Two pixels per pair, so pair p covers columns 2p and 2p+1.
+        for (int half = 0; half < 2; half++) {
+            uint16_t got = m.px(0, pair * 2 + half);
+            CHECK(got == want[pair], "multicolour pair %d pixel %d came out %04x, expected %04x from %s", pair, half,
+                  got, want[pair], from[pair]);
+        }
+    }
+}
+
+// ECM and MCM set together is one of the VIC's invalid modes. The chip outputs
+// black. Drawing nothing instead left whatever the previous frame had put in
+// that row of the buffer, so an invalid mode showed a stale picture.
+static void testInvalidModeIsBlack()
+{
+    printf("VIC: the invalid ECM+MCM mode outputs black, not the last frame\n");
+    Machine m;
+
+    // Draw a normal screenful first, so there is something to leave behind.
+    for (int i = 0; i < 1000; i++) {
+        ram[0x0400 + i]   = 0x01;
+        m.vic.colormap[i] = 0x0e;
+    }
+    m.drawFrame();
+    bool drewSomething = false;
+    for (int c = 0; c < 320 && !drewSomething; c++)
+        if (m.px(4, c) != m.px(4, 0)) drewSomething = true;
+    CHECK(drewSomething, "the first frame drew nothing, so the test cannot show the second one replaced it");
+
+    // Now the invalid combination: ECM in $d011 and MCM in $d016.
+    m.vic.vicreg[0x11] = 0x5b;
+    m.vic.vicreg[0x16] = 0x18;
+    m.drawFrame();
+
+    const uint16_t black = HeadlessDisplay::colors[0];
+    int wrong = 0;
+    for (int c = 0; c < 320; c++)
+        if (m.px(4, c) != black) wrong++;
+    CHECK(wrong == 0, "%d of 320 pixels on an invalid-mode line were not black", wrong);
+}
+
 int main()
 {
     printf("VIC rendering\n\n");
@@ -365,6 +433,8 @@ int main()
     testBadLineSuppressionStopsTheRow();
     testSpritesIgnoreYScroll();
     testMulticolourZeroOneIsBackground();
+    testMulticolourTextColours();
+    testInvalidModeIsBlack();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
