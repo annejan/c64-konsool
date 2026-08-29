@@ -366,6 +366,151 @@ static bool loadImage(TestCpu& cpu, const std::string& path)
     return total > 0;
 }
 
+// Klaus Dormann's suite walks the documented opcodes only, and the cycle tests
+// next door check how long these take without ever checking what they compute.
+// A fast loader is made of them: Sparkle's GCR decoder, which runs in the
+// drive's zero page, is almost nothing but LAX, SAX, ALR and SBX. A wrong
+// result here does not crash, it silently decodes to the wrong byte, and the
+// loader spins looking for a block it will never recognise.
+static void testUndocumented()
+{
+    printf("6502: the undocumented opcodes a loader is built from\n");
+    TestCpu cpu;
+
+    // LAX zp: loads A and X with the same byte.
+    cpu.begin(0x4000);
+    cpu.mem[0x0010]  = 0x80;
+    cpu.mem[0x4000]  = 0xa7;  // LAX $10
+    cpu.mem[0x4001]  = 0x10;
+    cpu.stepOne();
+    CHECK(cpu.getA() == 0x80, "LAX $10 left A=$%02x, expected $80", cpu.getA());
+    CHECK(cpu.getX() == 0x80, "LAX $10 left X=$%02x, expected $80", cpu.getX());
+    CHECK(cpu.getN(), "LAX did not take N from the byte it loaded");
+    CHECK(!cpu.getZ(), "LAX set Z on $80");
+
+    // LAX abs, the form the decoder uses to read a table.
+    cpu.begin(0x4000);
+    cpu.mem[0x1234] = 0x00;
+    cpu.mem[0x4000] = 0xaf;  // LAX $1234
+    cpu.mem[0x4001] = 0x34;
+    cpu.mem[0x4002] = 0x12;
+    cpu.stepOne();
+    CHECK(cpu.getA() == 0x00 && cpu.getX() == 0x00, "LAX $1234 did not load zero into both");
+    CHECK(cpu.getZ(), "LAX did not set Z on zero");
+
+    // LAX (zp),Y.
+    cpu.begin(0x4000);
+    cpu.setY(0x04);
+    cpu.mem[0x0020] = 0x00;
+    cpu.mem[0x0021] = 0x30;  // pointer to $3000
+    cpu.mem[0x3004] = 0x5a;
+    cpu.mem[0x4000] = 0xb3;  // LAX ($20),Y
+    cpu.mem[0x4001] = 0x20;
+    cpu.stepOne();
+    CHECK(cpu.getA() == 0x5a && cpu.getX() == 0x5a, "LAX ($20),Y left A=$%02x X=$%02x, expected $5a",
+          cpu.getA(), cpu.getX());
+
+    // SAX zp: stores A AND X, and touches no flag.
+    cpu.begin(0x4000);
+    cpu.setA(0xf0);
+    cpu.setX(0x3c);
+    cpu.setC(true);
+    cpu.mem[0x4000] = 0x87;  // SAX $30
+    cpu.mem[0x4001] = 0x30;
+    cpu.stepOne();
+    CHECK(cpu.mem[0x0030] == 0x30, "SAX stored $%02x, expected $f0 AND $3c = $30", cpu.mem[0x0030]);
+    CHECK(cpu.getA() == 0xf0 && cpu.getX() == 0x3c, "SAX changed a register");
+    CHECK(cpu.getC(), "SAX cleared the carry, it must not touch flags");
+
+    // ALR: AND then shift right, with the carry coming out of the bit shifted off.
+    cpu.begin(0x4000);
+    cpu.setA(0xff);
+    cpu.mem[0x4000] = 0x4b;  // ALR #$0f
+    cpu.mem[0x4001] = 0x0f;
+    cpu.stepOne();
+    CHECK(cpu.getA() == 0x07, "ALR #$0f on A=$ff left $%02x, expected $07", cpu.getA());
+    CHECK(cpu.getC(), "ALR did not put the shifted out bit into the carry");
+    CHECK(!cpu.getN(), "ALR set N, a right shift cannot");
+
+    // ANC: AND, then copy bit 7 into the carry.
+    cpu.begin(0x4000);
+    cpu.setA(0xff);
+    cpu.mem[0x4000] = 0x0b;  // ANC #$80
+    cpu.mem[0x4001] = 0x80;
+    cpu.stepOne();
+    CHECK(cpu.getA() == 0x80, "ANC #$80 on A=$ff left $%02x, expected $80", cpu.getA());
+    CHECK(cpu.getN(), "ANC did not set N");
+    CHECK(cpu.getC(), "ANC did not copy bit 7 into the carry");
+
+    // DCP: decrement, then compare against A.
+    cpu.begin(0x4000);
+    cpu.setA(0x05);
+    cpu.mem[0x0040] = 0x05;
+    cpu.mem[0x4000] = 0xc7;  // DCP $40
+    cpu.mem[0x4001] = 0x40;
+    cpu.stepOne();
+    CHECK(cpu.mem[0x0040] == 0x04, "DCP left $%02x in memory, expected $04", cpu.mem[0x0040]);
+    CHECK(cpu.getC(), "DCP cleared the carry comparing $05 against $04");
+    CHECK(!cpu.getZ(), "DCP set Z on an unequal compare");
+    CHECK(cpu.getA() == 0x05, "DCP changed the accumulator");
+
+    // ISC: increment, then subtract.
+    cpu.begin(0x4000);
+    cpu.setA(0x20);
+    cpu.setC(true);
+    cpu.mem[0x0050] = 0x0f;
+    cpu.mem[0x4000] = 0xe7;  // ISC $50
+    cpu.mem[0x4001] = 0x50;
+    cpu.stepOne();
+    CHECK(cpu.mem[0x0050] == 0x10, "ISC left $%02x in memory, expected $10", cpu.mem[0x0050]);
+    CHECK(cpu.getA() == 0x10, "ISC left A=$%02x, expected $20 - $10 = $10", cpu.getA());
+
+    // SLO: shift left, then OR into A.
+    cpu.begin(0x4000);
+    cpu.setA(0x00);
+    cpu.mem[0x0060] = 0x81;
+    cpu.mem[0x4000] = 0x07;  // SLO $60
+    cpu.mem[0x4001] = 0x60;
+    cpu.stepOne();
+    CHECK(cpu.mem[0x0060] == 0x02, "SLO left $%02x in memory, expected $02", cpu.mem[0x0060]);
+    CHECK(cpu.getA() == 0x02, "SLO left A=$%02x, expected $02", cpu.getA());
+    CHECK(cpu.getC(), "SLO did not shift bit 7 into the carry");
+
+    // SRE: shift right, then EOR into A. This is the one a GCR decoder leans on.
+    cpu.begin(0x4000);
+    cpu.setA(0xff);
+    cpu.mem[0x0070] = 0x03;
+    cpu.mem[0x4000] = 0x47;  // SRE $70
+    cpu.mem[0x4001] = 0x70;
+    cpu.stepOne();
+    CHECK(cpu.mem[0x0070] == 0x01, "SRE left $%02x in memory, expected $01", cpu.mem[0x0070]);
+    CHECK(cpu.getA() == 0xfe, "SRE left A=$%02x, expected $ff EOR $01 = $fe", cpu.getA());
+    CHECK(cpu.getC(), "SRE did not shift bit 0 into the carry");
+
+    // RLA: rotate left through the carry, then AND into A.
+    cpu.begin(0x4000);
+    cpu.setA(0xff);
+    cpu.setC(true);
+    cpu.mem[0x0080] = 0x80;
+    cpu.mem[0x4000] = 0x27;  // RLA $80
+    cpu.mem[0x4001] = 0x80;
+    cpu.stepOne();
+    CHECK(cpu.mem[0x0080] == 0x01, "RLA left $%02x in memory, expected $01", cpu.mem[0x0080]);
+    CHECK(cpu.getA() == 0x01, "RLA left A=$%02x, expected $01", cpu.getA());
+    CHECK(cpu.getC(), "RLA did not rotate bit 7 into the carry");
+
+    // RRA: rotate right through the carry, then add to A.
+    cpu.begin(0x4000);
+    cpu.setA(0x00);
+    cpu.setC(true);
+    cpu.mem[0x0090] = 0x01;
+    cpu.mem[0x4000] = 0x67;  // RRA $90
+    cpu.mem[0x4001] = 0x90;
+    cpu.stepOne();
+    CHECK(cpu.mem[0x0090] == 0x80, "RRA left $%02x in memory, expected $80", cpu.mem[0x0090]);
+    CHECK(cpu.getA() == 0x81, "RRA left A=$%02x, expected $80 plus the carry it rotated out", cpu.getA());
+}
+
 int main(int argc, char** argv)
 {
     std::string path = (argc > 1) ? argv[1] : "6502_functional_test.bin";
@@ -421,6 +566,7 @@ int main(int argc, char** argv)
     testRtiRestores();
     testStackWraps();
     testSbx();
+    testUndocumented();
     testIndirectYWrapsInZeroPage();
 
     printf("\n%d checks, %d failures\n", checks, failures);
