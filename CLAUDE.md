@@ -306,9 +306,50 @@ samples against 42,822 for the byte-ready wait under it -- but as a *retry
 loop*, not a stuck compare. It finds a header, goes on, something after
 `$05e1` fails, and it comes back to hunt again for ever.
 
-So the next step is to trace past `$05e1` and find what fails after the header
-matches, rather than anything about sync detection or the serial bus. Both of
-those have now been measured and are behaving.
+### Traced past `$05e1`: it is the header check that fails
+
+The path after the header byte matches is short and always the same:
+
+```
+05E1  B7 B1     LAX $B1,Y
+05E3  8E B0 05  STX $05B0
+05E6  69 0F     ADC #$0F
+05E8  50 FE     BVC $05E8      ; wait for one more byte
+05EA  A6 93     LDX $93
+05EC  41 57     EOR ($57,X)
+05EE  48 68     PHA / PLA
+05F0  87 B9     SAX $B9
+05F2  4B C1     ALR #$C1
+05F4  D0 D6     BNE $05CC      ; gives up, hunts again
+```
+
+Traced three times, identical each time: `$05e1 $05e3 $05e6 $05e8 x4 $05ea
+$05ec $05ee $05ef $05f0 $05f2 $05f4 $05cc`. So it takes the header mark, pulls
+one more GCR byte, folds the two together and requires the result to be zero.
+It never is.
+
+The bytes it is given:
+
+    pos=6160 byte=$52   header mark, matches
+    pos=6161 byte=$6e
+    pos=6522 byte=$52
+    pos=6523 byte=$6f
+
+`$52` is right: the header mark `$08` encodes to `01010 01001`, whose first
+byte is `$52`. The byte after it carries the checksum's high nibble, and
+decoding `$6e` gives `10111`, which is `7`, for both headers sampled.
+
+So the question is now narrow and entirely about what this encoder writes into
+a header block: whether the byte following the mark is what a real disk carries,
+and whether the checksum (`sector ^ track ^ id2 ^ id1`) and the ID bytes are
+placed and encoded the way the surface really holds them. The DOS accepts these
+headers, but the DOS decodes them through its own table and only checks the
+result; this loader folds the raw GCR and demands an exact answer, so it is a
+far stricter reader of the same bytes.
+
+`Gcr.cpp` is where the header block is built. VICE plays the same `.d64`, so
+comparing the bytes it lays down for one header against these four would settle
+it outright.
 
 ## VICE as an oracle, through the MCP build
 
