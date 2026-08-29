@@ -306,9 +306,110 @@ samples against 42,822 for the byte-ready wait under it -- but as a *retry
 loop*, not a stuck compare. It finds a header, goes on, something after
 `$05e1` fails, and it comes back to hunt again for ever.
 
-So the next step is to trace past `$05e1` and find what fails after the header
-matches, rather than anything about sync detection or the serial bus. Both of
-those have now been measured and are behaving.
+### Traced past `$05e1`: it is the header check that fails
+
+The path after the header byte matches is short and always the same:
+
+```
+05E1  B7 B1     LAX $B1,Y
+05E3  8E B0 05  STX $05B0
+05E6  69 0F     ADC #$0F
+05E8  50 FE     BVC $05E8      ; wait for one more byte
+05EA  A6 93     LDX $93
+05EC  41 57     EOR ($57,X)
+05EE  48 68     PHA / PLA
+05F0  87 B9     SAX $B9
+05F2  4B C1     ALR #$C1
+05F4  D0 D6     BNE $05CC      ; gives up, hunts again
+```
+
+Traced three times, identical each time: `$05e1 $05e3 $05e6 $05e8 x4 $05ea
+$05ec $05ee $05ef $05f0 $05f2 $05f4 $05cc`. So it takes the header mark, pulls
+one more GCR byte, folds the two together and requires the result to be zero.
+It never is.
+
+The bytes it is given:
+
+    pos=6160 byte=$52   header mark, matches
+    pos=6161 byte=$6e
+    pos=6522 byte=$52
+    pos=6523 byte=$6f
+
+`$52` is right: the header mark `$08` encodes to `01010 01001`, whose first
+byte is `$52`. The byte after it carries the checksum's high nibble, and
+decoding `$6e` gives `10111`, which is `7`, for both headers sampled.
+
+So the question is now narrow and entirely about what this encoder writes into
+a header block: whether the byte following the mark is what a real disk carries,
+and whether the checksum (`sector ^ track ^ id2 ^ id1`) and the ID bytes are
+placed and encoded the way the surface really holds them. The DOS accepts these
+headers, but the DOS decodes them through its own table and only checks the
+result; this loader folds the raw GCR and demands an exact answer, so it is a
+far stricter reader of the same bytes.
+
+### The surface is not the difference
+
+That comparison has now been made, and the encoder and the track layout are
+identical to VICE's:
+
+- `gcrConv4` against VICE's `gcr_convert_4bytes_to_GCR`, compiled side by side
+  and fed the same input: **5145 headers and 65536 arbitrary quads, zero
+  differing bytes**.
+- Header block: `[$08, sector ^ track ^ id2 ^ id1, sector, track]` then
+  `[id2, id1, $0f, $0f]`, the same order and the same checksum as
+  `gcr_convert_sector_to_GCR`.
+- Sync 5 bytes and header gap 9, matching `disk_image_sync_size` and
+  `disk_image_header_gap_size` for a D64.
+- Tail gaps `{9, 12, 17, 8}`, matching `gap_size_d64`.
+- The whole track filled with `$55` before the sectors are written, as
+  `fsimage-dxx.c` does, and the same stride: 354 plus the tail gap.
+
+So the bytes on the emulated surface are right, and the header the loader reads
+is the header VICE would give it.
+
+The upload is not the problem either. Logging the byte the C64 loads at `$3851`
+against the byte the drive stores at `$066a` shows the two sequences agreeing
+exactly -- `ff ff ff 30 f0 60 b0 20 ff 40 80 00 ...` on both sides -- so the
+`$dd02` transfer delivers the drivecode and its tables intact.
+
+### The head is on the wrong track
+
+What is actually wrong is where the head is. During the hunt:
+
+    [track] head on track 1 (halfTrack 2) pos=5971
+
+Track 1. The drivecode steps the head out from track 18 all the way to the stop
+-- a bump, which is normal -- and then **never steps back in**. Counting the
+steps after the upload: `in=0`, every one of them outward. So every header it
+reads is a track 1 header, the check at `$05f2` compares it against what it
+expects for the track it means to be on, and fails for ever. That is why the
+`$52` is right and the fold still fails.
+
+### The stepper model differs from VICE, but porting it breaks kloten
+
+VICE (`src/drive/iecieee/via2d.c`, `store_prb`) works out the step from the
+head's own position rather than a remembered phase, and ignores an ambiguous
+two coil jump:
+
+```c
+new_stepper_position = byte & 3;
+old_stepper_position = (current_half_track - 2) & 3;
+step_count = (new - old) & 3;          /* 3 means -1 */
+if (byte & 0x4) {                      /* only while the motor runs */
+    if (step_count == 1 || step_count == -1) drive_move_head(step_count, drv);
+}
+```
+
+`updateStepper` here keeps its own `lastStepperPhase`, has no motor check, and
+treats anything that is not a single step forward as a step outward, so a two
+coil jump moves the head where the hardware would leave it still.
+
+Porting VICE's version verbatim was tried and **regressed kloten**: the five
+.prg demos stayed byte identical but kloten stopped running, sitting at READY
+instead of taking over the screen. So something else in this drive model is
+built around the current behaviour -- the motor gate and the half track base
+are the two candidates -- and the stepper cannot simply be replaced without
+finding it. The change was reverted.
 
 ## VICE as an oracle, through the MCP build
 

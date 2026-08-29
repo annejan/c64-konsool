@@ -42,6 +42,8 @@ void Drive1541::reset()
     // reset() flushes anything pending before parking the head.
     controller.reset();
     lastStepperPhase = 0;
+    stepperAligned   = false;
+    stepperSkew      = 0;
     byteReadyCycles  = 0;
     headReadThisByte = false;
     headByte         = 0;
@@ -88,16 +90,42 @@ void Drive1541::updateIecOutputs()
 // whether to move in or out.
 void Drive1541::updateStepper(uint8_t portB)
 {
-    uint8_t phase = static_cast<uint8_t>(portB & VIA2_STEP_MASK);
-    if (phase == lastStepperPhase) return;
+    // The stepper only turns while the motor is running, and its position is
+    // the head's own position rather than a phase remembered from the last
+    // write: on real hardware the two cannot disagree, because the head sits
+    // wherever the energised coil holds it. VICE works it out the same way
+    // (src/drive/iecieee/via2d.c, store_prb):
+    //
+    //     old  = (current_half_track - 2) & 3
+    //     step = (new - old) & 3, where 3 means -1
+    //
+    // Energising the coil two places round is ambiguous -- the head is pulled
+    // equally both ways -- so it stays where it is.
+    //
+    // That last rule needs the two to start out agreeing, which is the one
+    // thing this emulator has to arrange and hardware gets for free. The head
+    // is placed on track 18 at reset while the DOS holds phase zero, and those
+    // disagree by exactly two, so every write would be the ambiguous case and
+    // the head could never move at all. Line them up on the first write
+    // instead of stepping on it.
+    if ((portB & VIA2_MOTOR) == 0) return;
 
-    uint8_t forward = static_cast<uint8_t>((lastStepperPhase + 1) & VIA2_STEP_MASK);
-    if (phase == forward) {
+    int newPos = portB & VIA2_STEP_MASK;
+    if (!stepperAligned) {
+        stepperAligned = true;
+        stepperSkew    = static_cast<uint8_t>((newPos - static_cast<int>(controller.currentHalfTrack() - 2)) & VIA2_STEP_MASK);
+        return;
+    }
+
+    int oldPos = static_cast<int>(controller.currentHalfTrack() - 2 + stepperSkew) & VIA2_STEP_MASK;
+    int step   = (newPos - oldPos) & VIA2_STEP_MASK;
+    if (step == 3) step = -1;
+
+    if (step == 1) {
         controller.moveHeadIn();
-    } else {
+    } else if (step == -1) {
         controller.moveHeadOut();
     }
-    lastStepperPhase = phase;
 }
 
 uint8_t Drive1541::readVia1(uint8_t reg)
@@ -166,7 +194,7 @@ void Drive1541::writeVia2(uint8_t reg, uint8_t value)
     via2.write(reg, value);
 
     if (r == Via6522::REG_PRB || r == Via6522::REG_DDRB) {
-        updateStepper(static_cast<uint8_t>(via2.prb & via2.ddrb));
+        updateStepper(via2.prb);
 
         // The motor stopping is the drive saying it has finished with this
         // track, so anything written gets pushed out rather than waiting for

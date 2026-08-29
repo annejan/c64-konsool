@@ -49,6 +49,10 @@ class Drive1541 : public CPU6502 {
     // Stepper phase last seen on VIA 2 port B, to tell which way the head
     // moved when it changes.
     uint8_t lastStepperPhase = 0;
+    // The head and the stepper agree on real hardware; here they have to be
+    // lined up once, on the first write after a reset.
+    bool    stepperAligned = false;
+    uint8_t stepperSkew    = 0;
 
     // Cycles counted towards the next BYTE READY pulse from the head.
     unsigned int byteReadyCycles = 0;
