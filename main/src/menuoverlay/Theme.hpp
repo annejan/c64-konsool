@@ -51,7 +51,12 @@ static const int CONTENT_H = SCREEN_H - TOPBAR_H - HINTBAR_H;  // 384
 // hundred and forty entries cannot. Each screen picks the one that suits it,
 // so neither has to compromise for the other.
 static const int ROW_H       = 34;  // menus: 11 rows
-static const int ROW_H_DENSE = 24;  // directories: 16 rows
+static const int ROW_H_DENSE = 16;  // directories: 24 rows
+
+// A directory row is exactly two screen pixels per ROM pixel, which is the
+// size a C64 draws its own characters at and the size the glyphs tile at with
+// nothing left over. Three looked oversized and two in a taller row left a gap
+// that broke the vertical bars of a title box.
 
 // The selection is a bar down the left edge of a raised row, which reads at a
 // glance without painting the whole row a different colour.
@@ -61,6 +66,8 @@ static const int SEL_BAR_W = 4;
 // drawn 1:1 and anything else is scaled.
 static const int TITLE_SIZE = 22;
 static const int BODY_SIZE  = 18;
+// What fits beside a glyph in a dense row without overflowing it.
+static const int BODY_SIZE_DENSE = 16;
 
 // The scrollbar sits in the right margin rather than stealing a row for a
 // "page 3 of 7" counter.

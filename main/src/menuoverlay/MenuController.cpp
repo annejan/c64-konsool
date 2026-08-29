@@ -74,6 +74,7 @@ void MenuController::render()
     // browsable. Everything below is derived from it rather than assumed.
     const int    rowH      = currentMenu->rowHeight();
     const size_t MENU_ROWS = static_cast<size_t>(Theme::CONTENT_H / rowH);
+    const int    bodySize  = rowH >= Theme::BODY_SIZE + 6 ? Theme::BODY_SIZE : Theme::BODY_SIZE_DENSE;
 
     // The glyphs are scaled to fill the row exactly. A disk draws its title
     // box out of characters that are meant to touch, so any leading above or
@@ -132,7 +133,7 @@ void MenuController::render()
             pax_draw_rect(fb, Theme::ACCENT, 0, rowY, Theme::SEL_BAR_W, static_cast<float>(rowH));
         }
 
-        float textY = rowY + static_cast<float>(rowH - Theme::BODY_SIZE) / 2.0f;
+        float textY = rowY + static_cast<float>(rowH - bodySize) / 2.0f;
 
         // A CBM name is PETSCII, and the menu font has no graphics characters
         // in it, so a directory row is drawn from the C64 character ROM. The
@@ -143,7 +144,7 @@ void MenuController::render()
             float glyphY = rowY + static_cast<float>(rowH - 8 * PETSCII_SCALE) / 2.0f;
             pax_draw_petscii(fb, Theme::TEXT_PRIMARY, PETSCII_COL_X, glyphY, item.petscii, PETSCII_SCALE);
             if (!inert && !item.title.empty()) {
-                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE, BLOCKS_X, textY,
+                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, bodySize, BLOCKS_X, textY,
                               item.title.c_str());
             }
             continue;
@@ -155,7 +156,7 @@ void MenuController::render()
                 pax_draw_rect(fb, Theme::HAIRLINE, Theme::SIDE_PAD, rowY + static_cast<float>(rowH) / 2.0f,
                               Theme::SCREEN_W - 2 * Theme::SIDE_PAD, 1);
             } else {
-                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE, Theme::SIDE_PAD,
+                pax_draw_text(fb, Theme::TEXT_MUTED, pax_font_saira_regular, bodySize, Theme::SIDE_PAD,
                               textY, item.title.c_str());
             }
             continue;
@@ -166,12 +167,12 @@ void MenuController::render()
         std::string title = item.title;
         while (!title.empty() && (title.back() == ' ' || title.back() == ':')) title.pop_back();
 
-        pax_draw_text(fb, Theme::TEXT_PRIMARY, pax_font_saira_regular, Theme::BODY_SIZE, Theme::SIDE_PAD, textY,
+        pax_draw_text(fb, Theme::TEXT_PRIMARY, pax_font_saira_regular, bodySize, Theme::SIDE_PAD, textY,
                       title.c_str());
 
         if (item.type == MenuItemType::TOGGLE) {
             bool checked = menuDataStore->getBool(item.value_name, false);
-            pax_draw_text(fb, checked ? Theme::ACCENT : Theme::TEXT_MUTED, pax_font_saira_regular, Theme::BODY_SIZE,
+            pax_draw_text(fb, checked ? Theme::ACCENT : Theme::TEXT_MUTED, pax_font_saira_regular, bodySize,
                           Theme::VALUE_COL, textY, checked ? "On" : "Off");
         }
     }
