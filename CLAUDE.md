@@ -300,11 +300,24 @@ block, one byte after the sync ends, and never sees it.
 
 So this is sync and byte alignment on the emulated surface, not the serial bus.
 The DOS tolerates the same track because it hunts for the header rather than
-demanding it at a fixed offset. What matters is exactly which byte the drive
-delivers first once sync clears, and whether the last `$ff` of the sync run is
-delivered as a byte before it. VICE plays the same `.d64`, so the answer is in
-`src/drive/rotation.c`, which models rotation at the bit level where this is
-byte granular.
+demanding it at a fixed offset.
+
+Measured, logging the head at each of the hunt's two reads:
+
+    pc=$05d9  sync=1  headPos=6154     first read, still on the sync mark
+    pc=$05df  sync=0  headPos=6159     second read, five bytes later
+
+Between those two reads the drive executes `CLV` and one `BVC` spin, so the
+head should have moved **one** byte. It moves five. The loader therefore never
+compares the byte it means to, and `$52` never turns up however long it hunts.
+
+That is the bug to chase: byte ready is not pacing one byte per read for a
+loop this tight, so a fast reader loses four bytes in five. The DOS never
+notices because it re-hunts rather than counting. `Drive1541::countByteReady`
+and `DiskController::rotate`, with the `headReadThisByte` interlock between
+them, are where the byte is either delivered or skipped, and VICE's
+`src/drive/rotation.c` is the reference -- it models rotation at the bit level
+where this is byte granular.
 
 ## VICE as an oracle, through the MCP build
 
