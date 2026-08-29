@@ -43,10 +43,12 @@ static inline BaseType_t xSemaphoreTake(SemaphoreHandle_t s, TickType_t ticks)
     std::unique_lock<std::mutex> lk(s->m);
     s->waiters++;
     s->arrived.notify_all();
-    bool got = s->cv.wait_for(lk, std::chrono::milliseconds(ticks ? ticks : 1000),
-                              [s] { return s->signalled; });
+    // No timeout. The emulation parks here at the end of every frame and the
+    // runner releases it exactly once per drawn frame; letting the wait expire
+    // instead lets the emulation run a frame nobody asked for, and the run
+    // stops being reproducible. A headless run has no deadline to miss.
+    s->cv.wait(lk, [s] { return s->signalled; });
     s->waiters--;
-    if (!got) return pdFALSE;
     s->signalled = false;
     return pdTRUE;
 }

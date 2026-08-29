@@ -226,12 +226,6 @@ int main(int argc, char** argv)
             fprintf(stderr, "--disk2 needs --disk and --truedrive\n");
             return 2;
         }
-        // Wait for the emulation to park at the end of its frame before
-        // touching the VIC's bitmap or the drive, then let it go on. Strict
-        // alternation: exactly one emulated frame per drawn frame, and no
-        // overlap between the thread that writes the bitmap and the one that
-        // reads it.
-        hostWaitUntilParked(cpu.getFrameRateMutex());
         for (int s = 0; s < numSwapDisks; s++) {
             if (!swapDisks[s].open(swapPath[s])) {
                 fprintf(stderr, "cannot read %s\n", swapPath[s]);
@@ -256,6 +250,15 @@ int main(int argc, char** argv)
 
     // The display side: draw a frame, then let the emulation run the next one.
     for (long i = 0; i < frames; i++) {
+        // Everything in this loop reaches into the running machine: injectPrg
+        // writes RAM, setPC moves the program counter, the swap changes the
+        // disk under the head, and refresh reads the framebuffer. So park the
+        // emulation first and hold it there for all of it. Doing the injection
+        // before this wait raced the emulation mid-frame, and the program
+        // occasionally never started at all -- which showed up as a run that
+        // was reproducible most of the time, the worst kind.
+        hostWaitUntilParked(cpu.getFrameRateMutex());
+
         // Give the machine a moment to reach the READY prompt before typing,
         // and let an injected program be started the same way a person would.
         if (i == 100 && prgPath != nullptr) {
@@ -283,6 +286,15 @@ int main(int argc, char** argv)
         vic.refresh(true);
         xSemaphoreGive(cpu.getFrameRateMutex());
     }
+
+    // The loop above ends by letting the emulation go, so it is drawing
+    // another frame right now. Everything below reads the machine -- the VIC
+    // registers, the screen, the framebuffer, all of RAM -- so wait for it to
+    // park once more first. Without this the capture races that last frame,
+    // and the run is reproducible only about five times in six, which is far
+    // worse than never: it makes a before-and-after comparison look solid
+    // until the one time it quietly is not.
+    hostWaitUntilParked(cpu.getFrameRateMutex());
 
     // Where the VIC is fetching from. A demo that draws the wrong glyphs is
     // usually pointed at the wrong place rather than holding wrong data.

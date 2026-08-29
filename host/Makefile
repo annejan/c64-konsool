@@ -6,7 +6,7 @@
 
 SRC  := ../main/src
 CXX  ?= g++
-CXXFLAGS ?= -std=gnu++17 -O2 -g -DHOST_BUILD -I shim -I $(SRC) -I $(SRC)/drive
+CXXFLAGS ?= -std=gnu++17 -O2 -g -MMD -MP -DHOST_BUILD -I shim -I $(SRC) -I $(SRC)/drive
 LDFLAGS  ?= -pthread
 
 OBJS := c64host.o CPUC64.o VIC.o CIA.o CPU6502.o Joystick.o \
@@ -23,5 +23,7 @@ all: c64host
 c64host: $(OBJS)
 	$(CXX) $(OBJS) $(LDFLAGS) -o $@
 
+-include $(OBJS:.o=.d)
+
 clean:
-	rm -f *.o c64host
+	rm -f *.o *.d c64host
