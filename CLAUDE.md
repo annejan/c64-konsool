@@ -187,3 +187,74 @@ how the head is meant to behave. It models rotation at the bit level with an
 accumulator and treats sync as ten consecutive one bits, where this project is
 byte granular; and it keeps `BRA_MOTOR_ON` and `BRA_BYTE_READY` apart, the
 first turning the disk and the second only gating the signal to the CPU.
+
+## The host build, and why it has to be lock stepped
+
+`host/` builds the whole emulator for a normal machine. It is the only way to
+check a change without a badge, and the gate it provides is "these demos render
+byte identically before and after":
+
+```bash
+make -C host -j8
+./host/c64host --frames 400 --prg demo.prg --autostart --screenshot out.ppm
+./host/c64host --frames 900 --truedrive --drive-rom 1541.rom \
+    --disk side1.d64 --type $'LOAD"*",8,1\rRUN\r' --screenshot out.ppm
+```
+
+That gate is worth nothing unless the runner is deterministic, and it very
+nearly was not. The badge runs the emulation on one core and the display on the
+other; the host keeps that shape, and the first version paced the two with a
+sleep. The display thread then read the VIC's bitmap while the emulation was
+still writing it, so **two runs of the same binary produced different
+screenshots and different RAM**. That is not a flaky test, it is a broken
+instrument: it reported a regression in kloten that did not exist, and a
+correct bus fix was reverted because of a difference that turned out to be
+noise.
+
+It is fixed by waiting on the other thread's state rather than on a clock:
+`hostWaitUntilParked()` blocks until the emulation is parked in
+`xSemaphoreTake` at the end of its frame, and only then is the framebuffer
+read. Exactly one emulated frame per drawn frame, no sleeps anywhere. **Do not
+reintroduce a sleep here.** Before trusting any before/after comparison, run
+the same binary twice and check it agrees with itself.
+
+Disk runs are covered too: kloten loaded over the emulated 1541 comes back
+identical in both the screenshot and all 64K.
+
+## What the host build cannot check
+
+It links no pax, so nothing in `main/src/menuoverlay/` or the boot screen is
+verifiable here, and there are no tests for that layer either. Every menu
+change is unverified until someone looks at the badge. Two PETSCII sizing
+mistakes in one evening were caught that way and no other.
+
+## The serial bus, and the polarities already checked
+
+Frodo is the reference (`CLAUDE.md` says so above, and it holds). These four
+were each checked against it and are right, so there is no need to go round
+them again:
+
+- **C64 output**: a line is released only by driving its bit with a zero. A one
+  pulls it low, and so does leaving the bit an input, because the pin floats
+  high and the inverting driver turns that into a pulled down line. Frodo:
+  `inv_out = ~pra & ddra` (`src/CIA.cpp`, `write_pa`). A loader can therefore
+  bit bang the bus from `$dd02` alone, and The Lab does.
+- **Drive output**: DATA from VIA1 PB1, CLK from PB3, and the drive never
+  drives ATN (`src/CPU1541.cpp`, `set_iec_lines`).
+- **ATN acknowledge**: DATA is pulled low when the ATN line state equals the
+  ATNA bit (`CalcIECLines`). Ours reads `dataOut || (atna != atnLow())`, which
+  is the same thing.
+- **Drive input**: ATN arrives on VIA1 PB7, set when ATN is asserted.
+
+## Undocumented opcodes are results, not just cycles
+
+`cycle_test.cpp` times LAX, SLO, SRE, RRA, RLA and DCP without checking what
+they compute, and Klaus Dormann's suite does not walk them at all. A fast
+loader is made of them: Sparkle's GCR decoder, in the drive's zero page, is
+almost nothing but LAX, SAX, ALR and SBX. A wrong result there does not crash,
+it decodes to the wrong byte and the loader spins for ever.
+
+`cpu_test.cpp` now checks results and flags for eleven of them. They pass,
+which rules the opcodes out as the cause of the Sparkle demos hanging and
+leaves the disk side, where this emulation is byte granular and VICE is bit
+granular.
