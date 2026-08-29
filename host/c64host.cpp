@@ -20,11 +20,6 @@
 uint32_t hostRandomState = 0x12345678u;
 
 // The sixteen C64 colours as RGB565, matching the board driver's table.
-const uint16_t HeadlessDisplay::colors[16] = {
-    0x0000, 0xFFFF, 0x8000, 0x07FF, 0x8010, 0x0400, 0x0010, 0xFFE0,
-    0xFC00, 0x8200, 0xFA10, 0x4208, 0x8410, 0x07E0, 0x421F, 0xA534,
-};
-
 static uint8_t  ram[65536];
 static CPUC64   cpu;
 static VIC      vic;
