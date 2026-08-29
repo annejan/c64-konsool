@@ -259,65 +259,56 @@ which rules the opcodes out as the cause of the Sparkle demos hanging and
 leaves the disk side, where this emulation is byte granular and VICE is bit
 granular.
 
-## The Lab hangs looking for a header byte after sync
+## The Lab: what is actually known, and what was wrongly claimed
 
-Reproduces on the host build. The earlier account in this file said the drive
-deadlocked at `$064c` waiting for ATN while the C64 waited for DATA. **That was
-wrong**, and it is worth saying why: it came from a hot-PC histogram sampled at
-one moment, and from a probe that logged only the first thirty ATN transitions
-and then every two hundredth, so everything between was invisible. Both made a
-working handshake look like a deadlock.
+Reproduces on the host build. This section has been wrong twice, so the
+corrections are kept: they are the useful part.
 
-The handshake works. `$3848` writes `#$37` to `$dd02`, which makes ATN an input,
-and an input pulls its line low, so ATN asserts and the drive moves on three
-instructions later:
+**Wrong claim 1: a bus deadlock at `$064c`.** It is not. The handshake works.
+`$3848` writes `#$37` to `$dd02`, making ATN an input, and an input pulls its
+line low, so ATN asserts and the drive moves on three instructions later:
 
     t=3277941  ATN -> LOW  (pra=c3 ddra=37)
     t=3277944  drive leaves the ATN wait, now at $0653
-    t=3277953  ATN -> high (ddra=0f)
 
-That also shows why a port bit left as an input has to pull low: this loader
-never writes `$dd00` again after `$C3`, and toggling `$dd02` is the whole signal.
+That came from a hot-PC histogram sampled at one moment, and a probe that
+logged the first thirty ATN transitions and then every two hundredth, hiding
+the working handshake in between.
 
-Where it actually stops is in the uploaded drivecode at `$05d1`, sampled at
-720,917 hits against 42,822 for the byte-ready wait below it:
+**Wrong claim 2: the drive never sees the `$52` it hunts for.** It does. The
+drivecode at `$05d1` waits for sync, takes the byte that was ready, waits for
+the next, and requires `$52`:
 
 ```
 05CF  A0 52     LDY #$52
 05D1  2C 00 1C  BIT $1C00
 05D4  30 FB     BMI $05D1      ; wait for SYNC
-05D6  AD 01 1C  LDA $1C01      ; take the byte that was ready
+05D6  AD 01 1C  LDA $1C01
 05D9  B8        CLV
-05DA  50 FE     BVC $05DA      ; wait for the next one
-05DC  CC 01 1C  CPY $1C01      ; is it $52?
-05DF  D0 EB     BNE $05CC      ; no: reset the stack and hunt again
+05DA  50 FE     BVC $05DA      ; wait for the next byte
+05DC  CC 01 1C  CPY $1C01
+05DF  D0 EB     BNE $05CC
 ```
 
-It is reading raw GCR and looking for `$52` at a fixed offset after sync. `$52`
-is not arbitrary: the header mark `$08` GCR encodes to `01010 01001`, whose
-first byte is `0101 0010`. So it wants the first byte of a standard header
-block, one byte after the sync ends, and never sees it.
+Logging the bytes it is handed:
 
-So this is sync and byte alignment on the emulated surface, not the serial bus.
-The DOS tolerates the same track because it hunts for the header rather than
-demanding it at a fixed offset.
+    pc=$05d9 sync=1 headPos=6155 byte=$ff
+    pc=$05df sync=0 headPos=6160 byte=$52     <- matches
+    pc=$05df sync=0 headPos=6184 byte=$55
+    pc=$05df sync=0 headPos=6522 byte=$52     <- matches
 
-Measured, logging the head at each of the hunt's two reads:
+So it matches about half the time and falls through. The five byte gap between
+the two reads is also correct, not a fault: BYTE READY is suppressed while the
+head is on sync, so V fires on the first byte past a five byte sync run.
 
-    pc=$05d9  sync=1  headPos=6154     first read, still on the sync mark
-    pc=$05df  sync=0  headPos=6159     second read, five bytes later
+**What is actually true.** The drive spends its time at `$05d1` -- 720,917
+samples against 42,822 for the byte-ready wait under it -- but as a *retry
+loop*, not a stuck compare. It finds a header, goes on, something after
+`$05e1` fails, and it comes back to hunt again for ever.
 
-Between those two reads the drive executes `CLV` and one `BVC` spin, so the
-head should have moved **one** byte. It moves five. The loader therefore never
-compares the byte it means to, and `$52` never turns up however long it hunts.
-
-That is the bug to chase: byte ready is not pacing one byte per read for a
-loop this tight, so a fast reader loses four bytes in five. The DOS never
-notices because it re-hunts rather than counting. `Drive1541::countByteReady`
-and `DiskController::rotate`, with the `headReadThisByte` interlock between
-them, are where the byte is either delivered or skipped, and VICE's
-`src/drive/rotation.c` is the reference -- it models rotation at the bit level
-where this is byte granular.
+So the next step is to trace past `$05e1` and find what fails after the header
+matches, rather than anything about sync detection or the serial bus. Both of
+those have now been measured and are behaving.
 
 ## VICE as an oracle, through the MCP build
 
